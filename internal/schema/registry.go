@@ -19,6 +19,7 @@ import (
 	pluginv1 "todoapp/gen/taskcore/plugin/v1"
 	taskcorev1 "todoapp/gen/taskcore/v1"
 	"todoapp/internal/query"
+	"todoapp/internal/rules"
 	"todoapp/internal/store"
 )
 
@@ -88,6 +89,16 @@ func (r *Registry) RegisterManifest(ctx context.Context, m *pluginv1.Manifest) e
 	}
 	if err := r.apply(m); err != nil {
 		return err
+	}
+	// Templates are proposals, but broken proposals are bugs: a template
+	// that fails validation would only ever fail LATER, in the user's face,
+	// at `rule template apply`. Refuse it here, in the plugin author's face.
+	// Validated after apply so template conditions may reference the
+	// manifest's own kinds/types.
+	for _, tpl := range m.GetRuleTemplates() {
+		if err := rules.Validate(r.eng, tpl); err != nil {
+			return fmt.Errorf("schema: plugin %q ships a broken rule template: %w", m.GetName(), err)
+		}
 	}
 	return r.st.SaveManifest(ctx, m)
 }

@@ -36,6 +36,12 @@ type ItemServiceClient interface {
 	// (reason "CURSOR_EXPIRED"); the client SDK then resyncs via QueryItems
 	// and resumes from the snapshot's cursor.
 	Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (ItemService_WatchClient, error)
+	// Attach-to-remote: upgrades a native task into a tracked item by
+	// resolving a connector-native reference (URL, id) and pinning its
+	// mirror. The connector keeps that one object fresh even outside its
+	// sync scope. The item's kind becomes the remote kind — the one sanctioned
+	// kind change in the system.
+	LinkItem(ctx context.Context, in *LinkItemRequest, opts ...grpc.CallOption) (*LinkItemResponse, error)
 }
 
 type itemServiceClient struct {
@@ -123,6 +129,15 @@ func (x *itemServiceWatchClient) Recv() (*WatchResponse, error) {
 	return m, nil
 }
 
+func (c *itemServiceClient) LinkItem(ctx context.Context, in *LinkItemRequest, opts ...grpc.CallOption) (*LinkItemResponse, error) {
+	out := new(LinkItemResponse)
+	err := c.cc.Invoke(ctx, "/taskcore.v1.ItemService/LinkItem", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ItemServiceServer is the server API for ItemService service.
 // All implementations must embed UnimplementedItemServiceServer
 // for forward compatibility
@@ -141,6 +156,12 @@ type ItemServiceServer interface {
 	// (reason "CURSOR_EXPIRED"); the client SDK then resyncs via QueryItems
 	// and resumes from the snapshot's cursor.
 	Watch(*WatchRequest, ItemService_WatchServer) error
+	// Attach-to-remote: upgrades a native task into a tracked item by
+	// resolving a connector-native reference (URL, id) and pinning its
+	// mirror. The connector keeps that one object fresh even outside its
+	// sync scope. The item's kind becomes the remote kind — the one sanctioned
+	// kind change in the system.
+	LinkItem(context.Context, *LinkItemRequest) (*LinkItemResponse, error)
 	mustEmbedUnimplementedItemServiceServer()
 }
 
@@ -165,6 +186,9 @@ func (UnimplementedItemServiceServer) QueryItems(context.Context, *QueryItemsReq
 }
 func (UnimplementedItemServiceServer) Watch(*WatchRequest, ItemService_WatchServer) error {
 	return status.Errorf(codes.Unimplemented, "method Watch not implemented")
+}
+func (UnimplementedItemServiceServer) LinkItem(context.Context, *LinkItemRequest) (*LinkItemResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method LinkItem not implemented")
 }
 func (UnimplementedItemServiceServer) mustEmbedUnimplementedItemServiceServer() {}
 
@@ -290,6 +314,24 @@ func (x *itemServiceWatchServer) Send(m *WatchResponse) error {
 	return x.ServerStream.SendMsg(m)
 }
 
+func _ItemService_LinkItem_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LinkItemRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ItemServiceServer).LinkItem(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/taskcore.v1.ItemService/LinkItem",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ItemServiceServer).LinkItem(ctx, req.(*LinkItemRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ItemService_ServiceDesc is the grpc.ServiceDesc for ItemService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -316,6 +358,10 @@ var ItemService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QueryItems",
 			Handler:    _ItemService_QueryItems_Handler,
+		},
+		{
+			MethodName: "LinkItem",
+			Handler:    _ItemService_LinkItem_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

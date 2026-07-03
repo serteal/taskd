@@ -4,13 +4,17 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	taskcorev1 "todoapp/gen/taskcore/v1"
+	"todoapp/internal/intent"
 	"todoapp/internal/store"
+	tasksync "todoapp/internal/sync"
 )
 
 type itemService struct {
@@ -114,7 +118,15 @@ func (i *itemService) UpdateItem(ctx context.Context, req *taskcorev1.UpdateItem
 		return nil, status.Error(codes.InvalidArgument, "an update may touch only one layer (todo or mirror), never both")
 	}
 	if sawMirror {
-		return nil, status.Error(codes.FailedPrecondition, "mirror fields are read-only: they hold remote-confirmed truth (writes become intents once connectors ship)")
+		// One write API, two delivery paths: the only mirror-backed field
+		// writable by mask is the title, and "writing" it means asking the
+		// remote to rename — the mirror itself only ever holds
+		// remote-confirmed truth.
+		if len(paths) != 1 || paths[0] != "mirror.title" {
+			return nil, status.Error(codes.FailedPrecondition,
+				"mirror fields are read-only except mirror.title (which routes to the connector as a rename intent)")
+		}
+		return i.renameViaIntent(ctx, id, req.GetItem().GetMirror().GetTitle())
 	}
 
 	src := req.GetItem().GetTodo()
@@ -202,6 +214,107 @@ func cloneTS(ts *timestamppb.Timestamp) *timestamppb.Timestamp {
 		return nil
 	}
 	return timestamppb.New(ts.AsTime())
+}
+
+// renameViaIntent routes an UpdateItem on mirror.title through the outbox
+// with the bounded wait: CONFIRMED within ~2s when the connector is
+// responsive, else the QUEUED record rides back in the response.
+func (i *itemService) renameViaIntent(ctx context.Context, id, title string) (*taskcorev1.UpdateItemResponse, error) {
+	if i.s.intents == nil {
+		return nil, status.Error(codes.Unavailable, "intent router not running")
+	}
+	if strings.TrimSpace(title) == "" {
+		return nil, status.Error(codes.InvalidArgument, "mirror.title cannot be renamed to empty")
+	}
+	params, err := structpb.NewStruct(map[string]any{"title": title})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "params: %v", err)
+	}
+	rec, err := i.s.intents.Invoke(ctx, id, "rename", params, 2*time.Second)
+	if err != nil {
+		return nil, intentErr(err)
+	}
+	item, gerr := i.s.st.GetItem(ctx, id)
+	if gerr != nil {
+		return nil, storeErr(gerr)
+	}
+	return &taskcorev1.UpdateItemResponse{Item: item, Intent: rec}, nil
+}
+
+// intentErr maps the router's typed errors to gRPC codes.
+func intentErr(err error) error {
+	switch {
+	case errors.Is(err, intent.ErrNotMirrored):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, intent.ErrUnknownIntent), errors.Is(err, intent.ErrInvalidParams):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, intent.ErrUnsupported):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, intent.ErrNotRetryable), errors.Is(err, intent.ErrNotDiscardable):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	default:
+		return storeErr(err)
+	}
+}
+
+// LinkItem: attach-to-remote. Resolves the reference through the connector
+// and pins the mirror — the one sanctioned kind change in the system (a
+// native task becomes a tracked item).
+func (i *itemService) LinkItem(ctx context.Context, req *taskcorev1.LinkItemRequest) (*taskcorev1.LinkItemResponse, error) {
+	id, err := i.resolve(ctx, req.GetId())
+	if err != nil {
+		return nil, err
+	}
+	if i.s.dispatch == nil {
+		return nil, status.Error(codes.Unavailable, "no connector instances running")
+	}
+	if req.GetConnectorInstance() == "" || req.GetRef() == "" {
+		return nil, status.Error(codes.InvalidArgument, "connector_instance and ref are required")
+	}
+	item, err := i.s.st.GetItem(ctx, id)
+	if err != nil {
+		return nil, storeErr(err)
+	}
+	if item.GetMirror() != nil {
+		return nil, status.Error(codes.FailedPrecondition, "item already tracks a remote; an item has at most one")
+	}
+	remote, err := i.s.dispatch.Resolve(ctx, req.GetConnectorInstance(), req.GetRef())
+	if err != nil {
+		if st, ok := status.FromError(err); ok {
+			return nil, status.Errorf(st.Code(), "resolving %q via %s: %s", req.GetRef(), req.GetConnectorInstance(), st.Message())
+		}
+		return nil, status.Errorf(codes.Internal, "resolve: %v", err)
+	}
+	if remote.GetExternalId() == "" || remote.GetKind() == "" {
+		return nil, status.Error(codes.Internal, "connector resolved an item without identity")
+	}
+	if existing, err := i.s.st.GetItemByExternal(ctx, req.GetConnectorInstance(), remote.GetExternalId()); err == nil {
+		return nil, status.Errorf(codes.AlreadyExists, "that remote object is already tracked as %s", existing.GetId())
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, storeErr(err)
+	}
+
+	now := i.s.clk.Now()
+	prov := &taskcorev1.Provenance{Source: taskcorev1.ProvenanceSource_PROVENANCE_SOURCE_SYNC, Ref: req.GetConnectorInstance()}
+	updated, evt, err := i.s.st.MutateItem(ctx, id, prov, func(it *taskcorev1.Item) error {
+		it.Kind = remote.GetKind()
+		it.Mirror = &taskcorev1.Mirror{
+			Pinned: true,
+			Link: &taskcorev1.ExternalLink{
+				ConnectorInstance: req.GetConnectorInstance(),
+				ExternalId:        remote.GetExternalId(),
+			},
+		}
+		tasksync.ApplyRemote(it.Mirror, remote, now)
+		return nil
+	})
+	if err != nil {
+		return nil, storeErr(err)
+	}
+	if evt != nil {
+		i.s.hub.Publish(evt)
+	}
+	return &taskcorev1.LinkItemResponse{Item: updated}, nil
 }
 
 func (i *itemService) DeleteItem(ctx context.Context, req *taskcorev1.DeleteItemRequest) (*taskcorev1.DeleteItemResponse, error) {

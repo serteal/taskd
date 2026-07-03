@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package taskcore.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "todoapp/gen/taskcore/v1;taskcorev1";
+
+// IntentRecord is one entry in the outbox: a semantic command headed for a
+// remote system. Intents either succeed (the connector returns the
+// confirmed object, applied to the mirror immediately) or fail loudly —
+// there is no three-way merge, ever. Offline or remote-down, records wait
+// here durably and drain on reconnect; replaying commands is sensible in a
+// way replaying state diffs never is.
+message IntentRecord {
+  // ULID; doubles as the idempotency key connectors receive, so a retry
+  // after a crash can never double-apply a remote create/edit.
+  string id = 1;
+  string item_id = 2;
+  string connector_instance = 3;
+  // Lowercase standard-intent name: "rename", "add_comment", "delete",
+  // "set_due", "set_start", "assign", "set_priority", "set_completed".
+  string intent = 4;
+  google.protobuf.Struct params = 5;
+  IntentState state = 6;
+  int32 attempts = 7;
+  // Last failure, kept verbatim for `task pending` — nothing dies silently.
+  string last_error = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  // Earliest next delivery attempt (retry backoff).
+  google.protobuf.Timestamp next_attempt_at = 11;
+}
+
+enum IntentState {
+  INTENT_STATE_UNSPECIFIED = 0;
+  INTENT_STATE_QUEUED = 1;
+  INTENT_STATE_INFLIGHT = 2;
+  INTENT_STATE_CONFIRMED = 3;
+  // Terminal until retried or discarded by the user; transient errors
+  // retry automatically and stay QUEUED.
+  INTENT_STATE_FAILED = 4;
+  INTENT_STATE_DISCARDED = 5;
+}

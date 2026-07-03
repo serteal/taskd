@@ -92,6 +92,21 @@ type Store interface {
 	GetMeta(ctx context.Context, key string) (string, error)
 	SetMeta(ctx context.Context, key, value string) error
 
+	// The outbox (phase 4): durable intent records. EnqueueIntent inserts
+	// (id must be unique); UpdateIntent replaces the full record by id
+	// (ErrNotFound when absent). ListIntents filters by states (empty means
+	// QUEUED+INFLIGHT+FAILED) and optional item id, newest first, capped by
+	// limit (<=0 means 200). DueIntents returns QUEUED records with
+	// next_attempt_at <= now (or unset), oldest first — the worker's feed.
+	// RequeueStaleInflight flips INFLIGHT records older than cutoff back to
+	// QUEUED (crash recovery) and reports how many.
+	EnqueueIntent(ctx context.Context, rec *taskcorev1.IntentRecord) error
+	GetIntent(ctx context.Context, id string) (*taskcorev1.IntentRecord, error)
+	UpdateIntent(ctx context.Context, rec *taskcorev1.IntentRecord) error
+	ListIntents(ctx context.Context, states []taskcorev1.IntentState, itemID string, limit int) ([]*taskcorev1.IntentRecord, error)
+	DueIntents(ctx context.Context, now time.Time, limit int) ([]*taskcorev1.IntentRecord, error)
+	RequeueStaleInflight(ctx context.Context, cutoff time.Time) (int, error)
+
 	SaveView(ctx context.Context, view *taskcorev1.View) error
 	GetView(ctx context.Context, name string) (*taskcorev1.View, error)
 	ListViews(ctx context.Context) ([]*taskcorev1.View, error)

@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pluginv1 "todoapp/gen/taskcore/plugin/v1"
@@ -137,7 +139,7 @@ func (e *Engine) ReconcileOnce(ctx context.Context, src Source) (Stats, error) {
 		idByExt[ext] = local.GetId()
 		wasMissing := local.GetMirror().GetMissingSince() != nil || local.GetMirror().GetStale()
 		_, evt, err := e.st.MutateItem(ctx, local.GetId(), prov, func(it *taskcorev1.Item) error {
-			applyRemote(it.GetMirror(), r, now)
+			ApplyRemote(it.GetMirror(), r, now)
 			return nil
 		})
 		if err != nil {
@@ -153,11 +155,52 @@ func (e *Engine) ReconcileOnce(ctx context.Context, src Source) (Stats, error) {
 		}
 	}
 
+	// Pinned mirrors (attach-to-remote) refresh individually: they may live
+	// outside the snapshot scope, so their absence from a snapshot means
+	// nothing. Resolve errors skip the item this cycle; a NotFound freezes
+	// it stale (the remote is confirmed gone).
+	for ext, local := range localByExt {
+		if byExt[ext] != nil || !local.GetMirror().GetPinned() {
+			continue
+		}
+		remote, err := src.Resolve(ctx, ext)
+		if err != nil {
+			if status.Code(err) == codes.NotFound && !local.GetMirror().GetStale() {
+				_, evt, merr := e.st.MutateItem(ctx, local.GetId(), prov, func(it *taskcorev1.Item) error {
+					if it.GetMirror().MissingSince == nil {
+						it.GetMirror().MissingSince = timestamppb.New(now)
+					}
+					it.GetMirror().Stale = true
+					return nil
+				})
+				if merr != nil {
+					return stats, fmt.Errorf("stale pinned %s: %w", ext, merr)
+				}
+				if evt != nil {
+					e.hub.Publish(evt)
+					stats.Stale++
+				}
+			}
+			continue
+		}
+		_, evt, err := e.st.MutateItem(ctx, local.GetId(), prov, func(it *taskcorev1.Item) error {
+			ApplyRemote(it.GetMirror(), remote, now)
+			return nil
+		})
+		if err != nil {
+			return stats, fmt.Errorf("refresh pinned %s: %w", ext, err)
+		}
+		if evt != nil {
+			e.hub.Publish(evt)
+			stats.Updated++
+		}
+	}
+
 	// Disappearances: mark missing, then freeze as stale after the grace
 	// period. Never delete — the item may carry the user's todo, and the
-	// remote may come back.
+	// remote may come back. Pinned mirrors are exempt (handled above).
 	for ext, local := range localByExt {
-		if byExt[ext] != nil {
+		if byExt[ext] != nil || local.GetMirror().GetPinned() {
 			continue
 		}
 		mirror := local.GetMirror()
@@ -236,15 +279,15 @@ func mirrorFrom(r *pluginv1.RemoteItem, instance string, now time.Time) *taskcor
 			ExternalId:        r.GetExternalId(),
 		},
 	}
-	applyRemote(m, r, now)
+	ApplyRemote(m, r, now)
 	return m
 }
 
-// applyRemote overwrites the mirror's remote-owned fields from the snapshot.
+// ApplyRemote overwrites the mirror's remote-owned fields from the snapshot.
 // The todo layer and relations are untouched by construction: this function
 // only ever receives the mirror. last_synced_at is bookkeeping the differ
 // ignores, so setting it here persists only alongside a real change.
-func applyRemote(m *taskcorev1.Mirror, r *pluginv1.RemoteItem, now time.Time) {
+func ApplyRemote(m *taskcorev1.Mirror, r *pluginv1.RemoteItem, now time.Time) {
 	m.Title = r.GetTitle()
 	m.State = r.GetState()
 	m.Data = r.GetData()

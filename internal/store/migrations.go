@@ -69,6 +69,19 @@ var migrations = []string{
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	);`,
+
+	// 004 (phase 4): the outbox — durable intent records.
+	`CREATE TABLE intents (
+		id TEXT PRIMARY KEY,
+		item_id TEXT NOT NULL,
+		state INTEGER NOT NULL,
+		next_attempt_at_unix INTEGER,
+		created_at_unix INTEGER NOT NULL,
+		payload BLOB NOT NULL
+	);
+	CREATE INDEX idx_intents_state ON intents(state);
+	CREATE INDEX idx_intents_item ON intents(item_id);
+	CREATE INDEX idx_intents_due ON intents(state, next_attempt_at_unix);`,
 }
 
 // applyMigrations brings the database to the latest schema version.

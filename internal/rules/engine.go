@@ -46,6 +46,36 @@ type Engine struct {
 	// nextFire tracks each schedule rule's next due time. Initialized at
 	// engine start; downtime is not caught up (documented).
 	nextFire map[string]time.Time
+	// dispatch sends a rule's intent action to the router (nil until the
+	// daemon wires it; firing an intent action without it just logs).
+	dispatch func(ctx context.Context, itemID, name string) error
+}
+
+// SetIntentDispatch wires rule intent actions into the intent router.
+func (e *Engine) SetIntentDispatch(fn func(ctx context.Context, itemID, name string) error) {
+	e.dispatch = fn
+}
+
+// fireWithIntent applies the rule's local actions, then dispatches its
+// intent action (if any). The intent goes out even when the local actions
+// were a no-op: the trigger was the edge, not the local writes — a
+// write-back rule often has nothing local to change.
+func (e *Engine) fireWithIntent(ctx context.Context, rule *taskcorev1.Rule, itemID string, now time.Time) (*taskcorev1.Event, bool, error) {
+	evt, err := fire(ctx, e.st, rule, itemID, now)
+	if err != nil {
+		return nil, false, err
+	}
+	dispatched := false
+	if name := rule.GetDo().GetIntent(); name != "" {
+		if e.dispatch == nil {
+			e.log.Warn("rules: intent action with no router wired", "rule", rule.GetName(), "intent", name)
+		} else if derr := e.dispatch(ctx, itemID, name); derr != nil {
+			e.log.Warn("rules: intent dispatch failed", "rule", rule.GetName(), "intent", name, "err", derr)
+		} else {
+			dispatched = true
+		}
+	}
+	return evt, dispatched, nil
 }
 
 type compiledRule struct {
@@ -192,7 +222,7 @@ func (e *Engine) process(ctx context.Context, rules []*taskcorev1.Rule, ev *task
 			continue // level, not edge: the doorbell did not ring
 		}
 
-		evt, err := fire(ctx, e.st, rule, ev.GetItemId(), e.clk.Now())
+		evt, dispatched, err := e.fireWithIntent(ctx, rule, ev.GetItemId(), e.clk.Now())
 		if err != nil {
 			e.log.Warn("rules: fire failed", "rule", rule.GetName(), "item", ev.GetItemId(), "err", err)
 			continue
@@ -200,6 +230,8 @@ func (e *Engine) process(ctx context.Context, rules []*taskcorev1.Rule, ev *task
 		if evt != nil {
 			e.depth[evt.GetCursor()] = depth + 1
 			e.hub.Publish(evt)
+		}
+		if evt != nil || dispatched {
 			e.log.Info("rule fired", "rule", rule.GetName(), "item", ev.GetItemId(), "depth", depth)
 		}
 	}
@@ -275,12 +307,14 @@ func (e *Engine) applyToMatching(ctx context.Context, rule *taskcorev1.Rule, con
 			return applied, err
 		}
 		for _, it := range res.Items {
-			evt, err := fire(ctx, e.st, rule, it.GetId(), now)
+			evt, dispatched, err := e.fireWithIntent(ctx, rule, it.GetId(), now)
 			if err != nil {
 				return applied, err
 			}
 			if evt != nil {
 				e.hub.Publish(evt)
+			}
+			if evt != nil || dispatched {
 				applied++
 			}
 		}

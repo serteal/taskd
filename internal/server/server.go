@@ -13,6 +13,7 @@ import (
 	taskcorev1 "todoapp/gen/taskcore/v1"
 	"todoapp/internal/clock"
 	"todoapp/internal/feed"
+	"todoapp/internal/intent"
 	"todoapp/internal/query"
 	"todoapp/internal/store"
 )
@@ -24,27 +25,50 @@ var Version = "0.1.0-dev"
 // NativeKind is the kind of items created directly by users.
 const NativeKind = "task"
 
-type Server struct {
-	st    store.Store
-	hub   *feed.Hub
-	eng   *query.Engine
-	clk   clock.Clock
-	ids   clock.IDGen
-	kinds func() []*taskcorev1.KindInfo // the schema registry's merged view
-	// backfill is the rules engine's explicit level-apply (RuleService).
-	backfill func(ctx context.Context, name string) (int, error)
+// Options wires the server's collaborators. Store, Hub, Engine, Clock, and
+// IDs are required; the rest degrade gracefully when absent (tests wire
+// only what they exercise).
+type Options struct {
+	Store store.Store
+	Hub   *feed.Hub
+	Eng   *query.Engine
+	Clock clock.Clock
+	IDs   clock.IDGen
+	// Kinds is the schema registry's merged view (SchemaService).
+	Kinds func() []*taskcorev1.KindInfo
+	// Backfill is the rules engine's explicit level-apply (RuleService).
+	Backfill func(ctx context.Context, name string) (int, error)
+	// Intents is the outbox router (IntentService + mirror-path updates).
+	Intents *intent.Router
+	// Dispatch resolves remote refs for LinkItem (the plugin registry).
+	Dispatch intent.Dispatcher
 }
 
-func New(st store.Store, hub *feed.Hub, eng *query.Engine, clk clock.Clock, ids clock.IDGen, kinds func() []*taskcorev1.KindInfo, backfill func(ctx context.Context, name string) (int, error)) *Server {
-	if kinds == nil {
-		kinds = func() []*taskcorev1.KindInfo { return nil }
+type Server struct {
+	st       store.Store
+	hub      *feed.Hub
+	eng      *query.Engine
+	clk      clock.Clock
+	ids      clock.IDGen
+	kinds    func() []*taskcorev1.KindInfo
+	backfill func(ctx context.Context, name string) (int, error)
+	intents  *intent.Router
+	dispatch intent.Dispatcher
+}
+
+func New(o Options) *Server {
+	if o.Kinds == nil {
+		o.Kinds = func() []*taskcorev1.KindInfo { return nil }
 	}
-	if backfill == nil {
-		backfill = func(context.Context, string) (int, error) {
+	if o.Backfill == nil {
+		o.Backfill = func(context.Context, string) (int, error) {
 			return 0, errors.New("rules engine not running")
 		}
 	}
-	return &Server{st: st, hub: hub, eng: eng, clk: clk, ids: ids, kinds: kinds, backfill: backfill}
+	return &Server{
+		st: o.Store, hub: o.Hub, eng: o.Eng, clk: o.Clock, ids: o.IDs,
+		kinds: o.Kinds, backfill: o.Backfill, intents: o.Intents, dispatch: o.Dispatch,
+	}
 }
 
 // Register attaches all taskcore.v1 services to g.
@@ -52,6 +76,7 @@ func (s *Server) Register(g *grpc.Server) {
 	taskcorev1.RegisterItemServiceServer(g, &itemService{s: s})
 	taskcorev1.RegisterViewServiceServer(g, &viewService{s: s})
 	taskcorev1.RegisterRuleServiceServer(g, &ruleService{s: s})
+	taskcorev1.RegisterIntentServiceServer(g, &intentService{s: s})
 	taskcorev1.RegisterSchemaServiceServer(g, &schemaService{s: s})
 	taskcorev1.RegisterAdminServiceServer(g, &adminService{s: s})
 }

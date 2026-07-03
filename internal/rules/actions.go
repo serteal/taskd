@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	taskcorev1 "todoapp/gen/taskcore/v1"
+	"todoapp/internal/intent"
 	"todoapp/internal/query"
 	"todoapp/internal/store"
 )
@@ -69,12 +70,16 @@ func validateActions(a *taskcorev1.RuleActions) error {
 	}
 	empty := !a.GetAdd() && !a.GetComplete() && !a.GetReopen() &&
 		len(a.GetAddLabels()) == 0 && len(a.GetRemoveLabels()) == 0 &&
-		a.SetProject == nil && a.GetSetDueIn() == nil && a.GetSnoozeFor() == nil
+		a.SetProject == nil && a.GetSetDueIn() == nil && a.GetSnoozeFor() == nil &&
+		a.GetIntent() == ""
 	if empty {
 		return fmt.Errorf("`do` has no actions")
 	}
 	if !a.GetComplete() && a.GetCompleteReason() != "" {
 		return fmt.Errorf("`complete_reason` without `complete`")
+	}
+	if n := a.GetIntent(); n != "" && !intent.Known(n) {
+		return fmt.Errorf("unknown intent %q (standard intents: rename, add_comment, delete, set_due, set_start, assign, set_priority, set_completed)", n)
 	}
 	return nil
 }

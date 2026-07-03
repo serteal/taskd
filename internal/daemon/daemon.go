@@ -20,6 +20,7 @@ import (
 	taskcorev1 "todoapp/gen/taskcore/v1"
 	"todoapp/internal/clock"
 	"todoapp/internal/feed"
+	"todoapp/internal/intent"
 	"todoapp/internal/plugin"
 	"todoapp/internal/query"
 	"todoapp/internal/rules"
@@ -152,7 +153,22 @@ func Run(ctx context.Context, cfg Config) error {
 	rulesEng := rules.NewEngine(st, hub, eng, cfg.Clock, cfg.Log)
 	go rulesEng.Run(ctx)
 
-	srv := server.New(st, hub, eng, cfg.Clock, ids, registry.Kinds, rulesEng.Backfill)
+	// The intent router + outbox worker: the one write path toward remotes.
+	// Rule intent actions dispatch fire-and-forget (wait 0) — the outbox
+	// owns delivery from there.
+	instances := plugin.NewRegistry()
+	router := intent.NewRouter(st, hub, cfg.Clock, ids, instances, cfg.Log)
+	go router.RunWorker(ctx)
+	rulesEng.SetIntentDispatch(func(ctx context.Context, itemID, name string) error {
+		_, err := router.Invoke(ctx, itemID, name, nil, 0)
+		return err
+	})
+
+	srv := server.New(server.Options{
+		Store: st, Hub: hub, Eng: eng, Clock: cfg.Clock, IDs: ids,
+		Kinds: registry.Kinds, Backfill: rulesEng.Backfill,
+		Intents: router, Dispatch: instances,
+	})
 	g := grpc.NewServer()
 	srv.Register(g)
 
@@ -187,6 +203,8 @@ func Run(ctx context.Context, cfg Config) error {
 					return
 				}
 				defer running.Stop()
+				instances.Add(inst.Name, running)
+				defer instances.Remove(inst.Name)
 				cfg.Log.Info("instance running", "instance", inst.Name,
 					"plugin", running.Manifest().GetName(), "poll", running.Poll())
 				syncEng.RunInstance(ctx, running.Source(), running.Poll())

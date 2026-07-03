@@ -6,7 +6,7 @@ one query language, one rules engine, and one editing surface. Everything —
 CLI, TUI, web UI, MCP server, and every extension — is a gRPC peer of the
 daemon. See [DESIGN.md](DESIGN.md) for the full design.
 
-**Status: phases 0–3 complete** — native tasks end to end (daemon, store,
+**Status: phases 0–4 complete** — native tasks end to end (daemon, store,
 change feed, CEL queries, saved views, CLI, export/backup); the plugin
 system (subprocess host with supervision, snapshot sync engine with
 tombstone grace and value-based echo silencing, persisted schema registry
@@ -16,13 +16,21 @@ the rules engine: edge-triggered `became` rules evaluated against
 before/after images (a doorbell, not a level check), cron-scheduled sweeps,
 provenance-guarded depth-capped cascades, a durable cursor with idempotent
 crash replay, YAML apply/export, DryRun + explicit backfill, and plugin
-rule templates. Next per DESIGN.md §18: intents + outbox (phase 4).
+rule templates. Phase 4 adds the write path: standard intents routed
+through connectors with a durable outbox (bounded-wait confirm, backoff
+retries, retry/discard), rule write-back (`do: {intent: set_completed}`),
+attach-to-remote (`task link`), pinned-mirror refresh, and the first
+bidirectional connector — todo.txt (`plugins/todotxt`): your file is the
+remote; renames and completions flow both ways. Next per DESIGN.md §18:
+MCP server + contributions (phase 5).
 
 ```sh
 task rule apply -f rules.yaml    # became/schedule rules, DESIGN.md §7 shape
 task rule template ls            # starter rules shipped by plugins
-task rule dryrun <name>          # what would match right now
-task rule backfill <name>        # explicit retroactive application
+task rename <id> "new title"     # native: local edit; tracked: rename intent
+task pending                     # the outbox: queued / in-flight / failed
+task retry <intent-id>           # after fixing whatever broke
+task link <id> <instance> <ref>  # attach a native task to a remote object
 ```
 
 ## Quick start

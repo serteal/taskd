@@ -21,4 +21,8 @@ type Source interface {
 	// link namespace for everything this source yields.
 	Instance() string
 	Snapshot(ctx context.Context) ([]*pluginv1.RemoteItem, error)
+	// Resolve fetches one remote object by connector-native reference —
+	// pinned (attached) mirrors refresh through here, since they may live
+	// outside the instance's snapshot scope.
+	Resolve(ctx context.Context, ref string) (*pluginv1.RemoteItem, error)
 }

@@ -54,6 +54,10 @@ message Mirror {
   // Set when a snapshot source stopped listing this object (tombstone grace
   // period); cleared if it reappears.
   google.protobuf.Timestamp missing_since = 6;
+  // Attached explicitly (attach-to-remote) rather than arriving via the
+  // instance's scope: the sync engine refreshes pinned mirrors individually
+  // through Resolve and never applies snapshot-disappearance logic to them.
+  bool pinned = 7;
 }
 
 // Todo is the user's commitment. Core state is deliberately binary; all

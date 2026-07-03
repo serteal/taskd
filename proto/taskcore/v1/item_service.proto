@@ -4,6 +4,7 @@ package taskcore.v1;
 
 import "google/protobuf/field_mask.proto";
 import "taskcore/v1/event.proto";
+import "taskcore/v1/intent.proto";
 import "taskcore/v1/item.proto";
 
 option go_package = "todoapp/gen/taskcore/v1;taskcorev1";
@@ -27,6 +28,25 @@ service ItemService {
   // (reason "CURSOR_EXPIRED"); the client SDK then resyncs via QueryItems
   // and resumes from the snapshot's cursor.
   rpc Watch(WatchRequest) returns (stream WatchResponse);
+  // Attach-to-remote: upgrades a native task into a tracked item by
+  // resolving a connector-native reference (URL, id) and pinning its
+  // mirror. The connector keeps that one object fresh even outside its
+  // sync scope. The item's kind becomes the remote kind — the one sanctioned
+  // kind change in the system.
+  rpc LinkItem(LinkItemRequest) returns (LinkItemResponse);
+}
+
+message LinkItemRequest {
+  // A native task (no mirror).
+  string id = 1;
+  // Connector instance to resolve through, e.g. "todo@home".
+  string connector_instance = 2;
+  // URL or connector-native reference, passed to the connector verbatim.
+  string ref = 3;
+}
+
+message LinkItemResponse {
+  Item item = 1;
 }
 
 message CreateItemRequest {
@@ -64,6 +84,11 @@ message UpdateItemRequest {
 
 message UpdateItemResponse {
   Item item = 1;
+  // Set when the masked paths were mirror-backed and the write became an
+  // intent (one write API, two delivery paths): CONFIRMED means the remote
+  // accepted within the bounded wait and item already reflects it; QUEUED
+  // means the outbox owns it now.
+  IntentRecord intent = 2;
 }
 
 message DeleteItemRequest {

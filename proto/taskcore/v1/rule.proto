@@ -61,4 +61,10 @@ message RuleActions {
   // Relative to fire time.
   google.protobuf.Duration set_due_in = 8;
   google.protobuf.Duration snooze_for = 9;
+  // Dispatch a standard intent to the item's connector — the ONLY write in
+  // the remote direction, and it is always this explicit. Lowercase name
+  // ("set_completed", "set_due"); parameters derive from the item's current
+  // local state, so write-back pushes what the item now says. Runs after
+  // the local actions above.
+  string intent = 10;
 }

@@ -44,7 +44,7 @@ func newRuleSvc(t *testing.T) (*ruleService, store.Store, clock.IDGen) {
 	hub := feed.NewHub()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	eng := rules.NewEngine(st, hub, qe, clk, log)
-	srv := New(st, hub, qe, clk, clock.NewIDGen(clk, 1), nil, eng.Backfill)
+	srv := New(Options{Store: st, Hub: hub, Eng: qe, Clock: clk, IDs: clock.NewIDGen(clk, 1), Backfill: eng.Backfill})
 	return &ruleService{s: srv}, st, clock.NewIDGen(clk, 2)
 }
 

@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	pluginv1 "todoapp/gen/taskcore/plugin/v1"
 	taskcorev1 "todoapp/gen/taskcore/v1"
 	"todoapp/internal/clock"
@@ -22,6 +25,9 @@ type fakeSource struct {
 	instance string
 	items    []*pluginv1.RemoteItem
 	err      error
+	// resolvable backs Resolve for pinned-refresh tests; ids absent here
+	// resolve as gRPC NotFound (a confirmed-gone remote).
+	resolvable map[string]*pluginv1.RemoteItem
 }
 
 func (f *fakeSource) Instance() string { return f.instance }
@@ -33,6 +39,13 @@ func (f *fakeSource) Snapshot(context.Context) ([]*pluginv1.RemoteItem, error) {
 	out := make([]*pluginv1.RemoteItem, len(f.items))
 	copy(out, f.items)
 	return out, nil
+}
+
+func (f *fakeSource) Resolve(_ context.Context, ref string) (*pluginv1.RemoteItem, error) {
+	if r, ok := f.resolvable[ref]; ok {
+		return r, nil
+	}
+	return nil, status.Errorf(codes.NotFound, "no such object %q", ref)
 }
 
 type env struct {
@@ -260,6 +273,52 @@ func TestParentRelations(t *testing.T) {
 	e.clk.Advance(time.Minute)
 	if stats := e.reconcile(t); !(stats == syncengine.Stats{}) {
 		t.Fatalf("second cycle produced %+v", stats)
+	}
+}
+
+// TestPinnedRefresh: attached (pinned) mirrors live outside snapshot scope —
+// they refresh via Resolve, never get snapshot-disappearance treatment, and
+// freeze stale only on a confirmed NotFound.
+func TestPinnedRefresh(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+
+	// A pinned item, as LinkItem would create it. Never in any snapshot.
+	pinned := &taskcorev1.Item{
+		Id: "01PINNED00000000000000000X", Kind: "todotxt.task",
+		Mirror: &taskcorev1.Mirror{
+			Title: "attached thing", State: "open", Pinned: true,
+			Link: &taskcorev1.ExternalLink{ConnectorInstance: "cal@t", ExternalId: "pin-1"},
+		},
+		MirrorRevision: 1,
+	}
+	if _, err := e.st.CreateItem(ctx, pinned, &taskcorev1.Provenance{
+		Source: taskcorev1.ProvenanceSource_PROVENANCE_SOURCE_SYNC, Ref: "cal@t",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.src.resolvable = map[string]*pluginv1.RemoteItem{
+		"pin-1": {ExternalId: "pin-1", Kind: "todotxt.task", Title: "attached thing (renamed)", State: "open"},
+	}
+
+	// Snapshot is empty, yet the pinned item is refreshed, not tombstoned.
+	if stats := e.reconcile(t); stats.Updated != 1 || stats.Missing != 0 {
+		t.Fatalf("stats = %+v, want 1 updated, 0 missing", stats)
+	}
+	got, _ := e.st.GetItem(ctx, pinned.GetId())
+	if got.GetMirror().GetTitle() != "attached thing (renamed)" || !got.GetMirror().GetPinned() {
+		t.Fatalf("pinned refresh failed: %v", got.GetMirror())
+	}
+
+	// Remote confirmed gone → stale immediately (no grace ambiguity: a
+	// NotFound is an answer, not an absence).
+	delete(e.src.resolvable, "pin-1")
+	if stats := e.reconcile(t); stats.Stale != 1 {
+		t.Fatalf("stats = %+v, want 1 stale", stats)
+	}
+	got, _ = e.st.GetItem(ctx, pinned.GetId())
+	if !got.GetMirror().GetStale() {
+		t.Fatal("pinned item with NotFound remote must freeze stale")
 	}
 }
 

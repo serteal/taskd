@@ -364,6 +364,56 @@ func TestBackfill(t *testing.T) {
 	}
 }
 
+// TestIntentAction: a write-back rule (intent action only, nothing local)
+// must dispatch on the edge even though its local actions are a no-op —
+// the trigger was the flip, not the local writes.
+func TestIntentAction(t *testing.T) {
+	e := newEnv(t)
+	e.drain(t)
+
+	type call struct{ item, name string }
+	var calls []call
+	e.eng.SetIntentDispatch(func(_ context.Context, itemID, name string) error {
+		calls = append(calls, call{itemID, name})
+		return nil
+	})
+
+	if err := rules.Validate(e.qe, &taskcorev1.Rule{
+		Name: "bad", Became: "completed", Do: &taskcorev1.RuleActions{Intent: "explode"},
+	}); err == nil {
+		t.Fatal("unknown intent name must fail validation")
+	}
+
+	e.save(t, &taskcorev1.Rule{
+		Name:   "writeback",
+		Became: `kind == "gh.pr" && completed`,
+		Do:     &taskcorev1.RuleActions{Intent: "set_completed"}, // intent-only: valid
+	})
+
+	id := e.newMirror(t, "pr-9", "open")
+	e.drain(t)
+	// Promote and complete: the edge fires, local actions no-op, intent goes.
+	if _, evt, err := e.st.MutateItem(context.Background(), id, userProv, func(it *taskcorev1.Item) error {
+		it.Todo = &taskcorev1.Todo{Completed: true}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	} else {
+		e.hub.Publish(evt)
+	}
+	e.drain(t)
+
+	if len(calls) != 1 || calls[0] != (call{id, "set_completed"}) {
+		t.Fatalf("dispatch calls = %v, want one set_completed for %s", calls, id)
+	}
+	// The unrelated-update non-refire guarantee covers intents too.
+	e.touchTitle(t, id, "PR pr-9 (new commit)")
+	e.drain(t)
+	if len(calls) != 1 {
+		t.Fatalf("intent re-dispatched on a non-edge: %v", calls)
+	}
+}
+
 func strPtr(s string) *string { return &s }
 
 func tsOf(t time.Time) *timestamppb.Timestamp { return timestamppb.New(t) }

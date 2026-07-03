@@ -107,6 +107,8 @@ func revert(item *taskcorev1.Item, c *taskcorev1.FieldChange) error {
 		mirror(item).State = old.GetStringValue()
 	case "mirror.stale":
 		mirror(item).Stale = old.GetBoolValue()
+	case "mirror.pinned":
+		mirror(item).Pinned = old.GetBoolValue()
 	case "mirror.missing_since":
 		ts, err := valueTimestamp(old)
 		if err != nil {

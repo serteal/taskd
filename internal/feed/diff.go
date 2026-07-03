@@ -86,6 +86,7 @@ func Diff(before, after *taskcorev1.Item) ([]*taskcorev1.FieldChange, error) {
 	d.cmpAnyMap("mirror.data", bm.GetData(), am.GetData())
 	d.cmpBool("mirror.stale", bm.GetStale(), am.GetStale())
 	d.cmpTimestamp("mirror.missing_since", bm.GetMissingSince(), am.GetMissingSince())
+	d.cmpBool("mirror.pinned", bm.GetPinned(), am.GetPinned())
 
 	d.cmpRelations("relations", before.GetRelations(), after.GetRelations())
 

@@ -92,6 +92,9 @@ type doYAML struct {
 	Complete  bool        `yaml:"complete,omitempty"`
 	Reason    string      `yaml:"reason,omitempty"`
 	Reopen    bool        `yaml:"reopen,omitempty"`
+	// Standard intent dispatched to the item's connector after the local
+	// actions — the write-back primitive (e.g. "set_completed").
+	Intent string `yaml:"intent,omitempty"`
 }
 
 type labelsYAML struct {
@@ -139,6 +142,7 @@ func (y ruleYAML) toProto() (*taskcorev1.Rule, error) {
 		CompleteReason: y.Do.Reason,
 		Reopen:         y.Do.Reopen,
 		SetProject:     y.Do.Project,
+		Intent:         y.Do.Intent,
 	}
 	if y.Do.Labels != nil {
 		d.AddLabels = y.Do.Labels.Add
@@ -183,6 +187,7 @@ func ruleToYAML(r *taskcorev1.Rule) ruleYAML {
 		Reason:   d.GetCompleteReason(),
 		Reopen:   d.GetReopen(),
 		Project:  d.SetProject,
+		Intent:   d.GetIntent(),
 	}
 	if len(d.GetAddLabels()) > 0 || len(d.GetRemoveLabels()) > 0 {
 		do.Labels = &labelsYAML{Add: d.GetAddLabels(), Remove: d.GetRemoveLabels()}
@@ -247,6 +252,9 @@ func ruleActionsSummary(d *taskcorev1.RuleActions) string {
 	}
 	if d.GetReopen() {
 		parts = append(parts, "reopen")
+	}
+	if in := d.GetIntent(); in != "" {
+		parts = append(parts, "intent="+in)
 	}
 	return strings.Join(parts, ", ")
 }
