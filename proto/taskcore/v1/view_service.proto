@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package taskcore.v1;
+
+import "taskcore/v1/view.proto";
+
+option go_package = "todoapp/gen/taskcore/v1;taskcorev1";
+
+// ViewService stores named views. User-defined now; plugin contributions
+// merge into the same namespace later (additive RPCs).
+service ViewService {
+  rpc SaveView(SaveViewRequest) returns (SaveViewResponse);
+  rpc GetView(GetViewRequest) returns (GetViewResponse);
+  rpc ListViews(ListViewsRequest) returns (ListViewsResponse);
+  rpc DeleteView(DeleteViewRequest) returns (DeleteViewResponse);
+}
+
+message SaveViewRequest {
+  // Upserts by view.name.
+  View view = 1;
+}
+
+message SaveViewResponse {
+  View view = 1;
+}
+
+message GetViewRequest {
+  string name = 1;
+}
+
+message GetViewResponse {
+  View view = 1;
+}
+
+message ListViewsRequest {}
+
+message ListViewsResponse {
+  repeated View views = 1;
+}
+
+message DeleteViewRequest {
+  string name = 1;
+}
+
+message DeleteViewResponse {}

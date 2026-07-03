@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package taskcore.v1;
+
+option go_package = "todoapp/gen/taskcore/v1;taskcorev1";
+
+// SchemaService exposes the kind/facet registry. Phase 1 registers only the
+// native "task" kind; kind providers extend this at plugin-host time
+// (additive RPCs for descriptors etc.).
+service SchemaService {
+  rpc ListKinds(ListKindsRequest) returns (ListKindsResponse);
+}
+
+message ListKindsRequest {}
+
+message ListKindsResponse {
+  repeated KindInfo kinds = 1;
+}
+
+message KindInfo {
+  string kind = 1;
+  repeated FacetBinding facets = 2;
+}
+
+// FacetBinding declares a capability and binds its virtual fields to CEL
+// paths into this kind's data. Example: kind "calendar.event" declares
+// facet "schedulable" with bindings {"due": "mirror.data.event.start"};
+// the core then answers `due < friday` uniformly across all kinds.
+// For fields present in both layers the user's todo value wins when set
+// (override-wins), falling back to the bound mirror value.
+message FacetBinding {
+  // "schedulable", "completable", "assignable", "prioritized", ...
+  string facet = 1;
+  // virtual field name -> CEL path expression.
+  map<string, string> bindings = 2;
+}
