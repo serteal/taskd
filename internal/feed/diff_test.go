@@ -1,6 +1,7 @@
 package feed
 
 import (
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -48,14 +49,37 @@ func TestDiffCoversEveryItemLeaf(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Diff after setting %s: %v", path, err)
 		}
-		var got []string
-		for _, c := range changes {
-			got = append(got, c.GetPath())
+		// Setting a nested leaf materializes its parent message, so the
+		// presence change ("todo", "mirror") rides along by design.
+		want := map[string]bool{path: true}
+		if strings.HasPrefix(path, "todo.") {
+			want["todo"] = true
 		}
-		if len(changes) != 1 || changes[0].GetPath() != path {
-			t.Errorf("field %q: Diff reported %v — the differ has no comparator for it; teach Diff about this field", path, got)
+		if strings.HasPrefix(path, "mirror.") {
+			want["mirror"] = true
+		}
+		got := map[string]bool{}
+		for _, c := range changes {
+			got[c.GetPath()] = true
+		}
+		if len(got) != len(want) || !got[path] {
+			t.Errorf("field %q: Diff reported %v, want exactly %v — teach Diff about this field", path, keys(got), keys(want))
+		}
+		for w := range want {
+			if !got[w] {
+				t.Errorf("field %q: Diff reported %v, missing %q", path, keys(got), w)
+			}
 		}
 	}
+}
+
+func keys(m map[string]bool) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // leafPaths enumerates diffable leaf paths: repeated and map fields are one
@@ -222,13 +246,17 @@ func TestDiffGolden(t *testing.T) {
 			want: nil,
 		},
 		{
-			name:   "empty todo appearing is a no-op",
+			// A bare promotion IS a change: `has(item.todo)` flipping is the
+			// signal triage-watching rules key on (phase-3 presence change).
+			name:   "empty todo appearing is a presence change",
 			before: &taskcorev1.Item{Id: "a"},
 			after:  &taskcorev1.Item{Id: "a", Todo: &taskcorev1.Todo{}},
-			want:   nil,
+			want: []*taskcorev1.FieldChange{
+				change("todo", boolV(false), boolV(true)),
+			},
 		},
 		{
-			name:   "todo appears reporting each set leaf",
+			name:   "todo appears reporting presence plus each set leaf",
 			before: &taskcorev1.Item{Id: "a"},
 			after: &taskcorev1.Item{Id: "a", Todo: &taskcorev1.Todo{
 				Labels:  []string{"urgent"},
@@ -236,6 +264,7 @@ func TestDiffGolden(t *testing.T) {
 				Note:    "look",
 			}},
 			want: []*taskcorev1.FieldChange{
+				change("todo", boolV(false), boolV(true)),
 				change("todo.labels", listV(), listV("urgent")),
 				change("todo.note", strV(""), strV("look")),
 				change("todo.project", strV(""), strV("work/reviews")),
@@ -400,6 +429,7 @@ func TestDiffNilItems(t *testing.T) {
 		t.Fatalf("Diff(nil, item): %v", err)
 	}
 	assertChanges(t, got, []*taskcorev1.FieldChange{
+		change("todo", boolV(false), boolV(true)),
 		change("todo.note", strV(""), strV("n")),
 	})
 }

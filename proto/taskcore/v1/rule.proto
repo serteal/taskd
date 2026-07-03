@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package taskcore.v1;
+
+import "google/protobuf/duration.proto";
+
+option go_package = "todoapp/gen/taskcore/v1;taskcorev1";
+
+// Rule is the bridge between the mirror and todo layers: declarative user
+// config, CEL conditions, evaluated by the core against the change feed.
+// Rules are the user-space ontology — the schema knows todo/completed;
+// what "urgent" means and when a PR becomes your problem are rules.
+//
+// Exactly one trigger is set:
+//   - became: edge-triggered. Fires only when the condition flips from
+//     false (before-image) to true (after-image) — doorbell, not "someone
+//     is at the door". A commit pushed to a PR whose review-request
+//     condition was already true does not re-fire and cannot resurrect a
+//     completed todo. For CREATED events the before-condition is false by
+//     definition, so triage rules fire on newly mirrored items.
+//   - schedule: standing conditions ("anything overdue gets labeled"),
+//     evaluated over current state on a cron cadence, `where` selecting
+//     the items.
+message Rule {
+  string name = 1;
+  string description = 2;
+  bool disabled = 3;
+  // CEL over the item (same environment as filters). Edge semantics.
+  string became = 4;
+  Schedule schedule = 5;
+  // CEL selector for schedule rules; ignored for became rules.
+  string where = 6;
+  RuleActions do = 7;
+  // Evaluation order: rules run sequentially by (position, name), each
+  // seeing the state the previous left.
+  int32 position = 8;
+}
+
+message Schedule {
+  // Standard 5-field cron expression, e.g. "0 8 * * *".
+  string cron = 1;
+}
+
+// RuleActions mirrors the config file's `do:` block — one set of writes,
+// applied in the fixed order: add, project, labels, due/snooze,
+// complete/reopen. All writes carry RULE provenance and are idempotent
+// (re-applying is a no-op, which is what makes at-least-once delivery safe).
+// A rule never fires on changes it caused itself, and cascades are
+// depth-bounded by the engine.
+message RuleActions {
+  // Promote to a todo (no-op when one exists). Un-triaged mirrors live in
+  // the inbox until a rule or the user adds them.
+  bool add = 1;
+  bool complete = 2;
+  string complete_reason = 3;
+  bool reopen = 4;
+  repeated string add_labels = 5;
+  repeated string remove_labels = 6;
+  // Presence-aware: unset = leave alone, "" = clear the project.
+  optional string set_project = 7;
+  // Relative to fire time.
+  google.protobuf.Duration set_due_in = 8;
+  google.protobuf.Duration snooze_for = 9;
+}

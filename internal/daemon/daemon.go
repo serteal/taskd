@@ -22,6 +22,7 @@ import (
 	"todoapp/internal/feed"
 	"todoapp/internal/plugin"
 	"todoapp/internal/query"
+	"todoapp/internal/rules"
 	"todoapp/internal/schema"
 	"todoapp/internal/secret"
 	"todoapp/internal/server"
@@ -144,7 +145,14 @@ func Run(ctx context.Context, cfg Config) error {
 
 	hub := feed.NewHub()
 	ids := clock.NewIDGen(cfg.Clock, cfg.IDSeed)
-	srv := server.New(st, hub, eng, cfg.Clock, ids, registry.Kinds)
+
+	// The rules engine consumes the same feed as everything else, from its
+	// own durable cursor: rules fire whether a change came from the CLI, an
+	// agent, or a connector poll.
+	rulesEng := rules.NewEngine(st, hub, eng, cfg.Clock, cfg.Log)
+	go rulesEng.Run(ctx)
+
+	srv := server.New(st, hub, eng, cfg.Clock, ids, registry.Kinds, rulesEng.Backfill)
 	g := grpc.NewServer()
 	srv.Register(g)
 

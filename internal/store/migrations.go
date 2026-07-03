@@ -56,6 +56,19 @@ var migrations = []string{
 		payload BLOB NOT NULL,
 		stored_at_unix INTEGER NOT NULL
 	);`,
+
+	// 003 (phase 3): rules (store is the source of truth; files are
+	// import/export) and a small meta KV — the rules engine's durable event
+	// cursor lives there.
+	`CREATE TABLE rules (
+		name TEXT PRIMARY KEY,
+		position INTEGER NOT NULL,
+		payload BLOB NOT NULL
+	);
+	CREATE TABLE meta (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	);`,
 }
 
 // applyMigrations brings the database to the latest schema version.

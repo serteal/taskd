@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -30,19 +31,27 @@ type Server struct {
 	clk   clock.Clock
 	ids   clock.IDGen
 	kinds func() []*taskcorev1.KindInfo // the schema registry's merged view
+	// backfill is the rules engine's explicit level-apply (RuleService).
+	backfill func(ctx context.Context, name string) (int, error)
 }
 
-func New(st store.Store, hub *feed.Hub, eng *query.Engine, clk clock.Clock, ids clock.IDGen, kinds func() []*taskcorev1.KindInfo) *Server {
+func New(st store.Store, hub *feed.Hub, eng *query.Engine, clk clock.Clock, ids clock.IDGen, kinds func() []*taskcorev1.KindInfo, backfill func(ctx context.Context, name string) (int, error)) *Server {
 	if kinds == nil {
 		kinds = func() []*taskcorev1.KindInfo { return nil }
 	}
-	return &Server{st: st, hub: hub, eng: eng, clk: clk, ids: ids, kinds: kinds}
+	if backfill == nil {
+		backfill = func(context.Context, string) (int, error) {
+			return 0, errors.New("rules engine not running")
+		}
+	}
+	return &Server{st: st, hub: hub, eng: eng, clk: clk, ids: ids, kinds: kinds, backfill: backfill}
 }
 
 // Register attaches all taskcore.v1 services to g.
 func (s *Server) Register(g *grpc.Server) {
 	taskcorev1.RegisterItemServiceServer(g, &itemService{s: s})
 	taskcorev1.RegisterViewServiceServer(g, &viewService{s: s})
+	taskcorev1.RegisterRuleServiceServer(g, &ruleService{s: s})
 	taskcorev1.RegisterSchemaServiceServer(g, &schemaService{s: s})
 	taskcorev1.RegisterAdminServiceServer(g, &adminService{s: s})
 }

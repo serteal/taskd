@@ -54,7 +54,12 @@ import (
 func Diff(before, after *taskcorev1.Item) ([]*taskcorev1.FieldChange, error) {
 	d := &differ{}
 
+	// Message-presence changes: `has(item.todo)` flipping IS the promotion
+	// signal edge-triggered rules watch for, so presence is a first-class
+	// change ("todo": false → true), distinct from the leaf changes that may
+	// accompany it. Values are booleans (present / absent).
 	bt, at := before.GetTodo(), after.GetTodo()
+	d.cmpPresence("todo", bt != nil, at != nil)
 	d.cmpBool("todo.completed", bt.GetCompleted(), at.GetCompleted())
 	d.cmpTimestamp("todo.completed_at", bt.GetCompletedAt(), at.GetCompletedAt())
 	d.cmpString("todo.completed_reason", bt.GetCompletedReason(), at.GetCompletedReason())
@@ -66,6 +71,7 @@ func Diff(before, after *taskcorev1.Item) ([]*taskcorev1.FieldChange, error) {
 	d.cmpString("todo.note", bt.GetNote(), at.GetNote())
 
 	bm, am := before.GetMirror(), after.GetMirror()
+	d.cmpPresence("mirror", bm != nil, am != nil)
 	bl, al := bm.GetLink(), am.GetLink()
 	d.cmpString("mirror.link.connector_instance", bl.GetConnectorInstance(), al.GetConnectorInstance())
 	d.cmpString("mirror.link.external_id", bl.GetExternalId(), al.GetExternalId())
@@ -115,6 +121,16 @@ func (d *differ) cmpString(path, before, after string) {
 }
 
 func (d *differ) cmpBool(path string, before, after bool) {
+	if before == after {
+		return
+	}
+	d.add(path, structpb.NewBoolValue(before), structpb.NewBoolValue(after))
+}
+
+// cmpPresence records a message appearing or disappearing ("todo",
+// "mirror") as a boolean change. cmpBool would miss the absent→present-
+// but-zero-valued transition that a bare promotion is.
+func (d *differ) cmpPresence(path string, before, after bool) {
 	if before == after {
 		return
 	}

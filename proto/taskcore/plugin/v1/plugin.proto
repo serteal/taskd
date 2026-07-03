@@ -5,6 +5,7 @@ package taskcore.plugin.v1;
 import "google/protobuf/descriptor.proto";
 import "google/protobuf/duration.proto";
 import "google/protobuf/struct.proto";
+import "taskcore/v1/rule.proto";
 import "taskcore/v1/schema_service.proto";
 
 option go_package = "todoapp/gen/taskcore/plugin/v1;pluginv1";
@@ -39,6 +40,10 @@ message Manifest {
   // Which plugin services this executable implements: "connector" now;
   // "hook", "view_contributor" in later phases.
   repeated string services = 4;
+  // Starter rules for this plugin's kinds: proposals the user copies into
+  // their config (via RuleService.ListRuleTemplates) and edits freely.
+  // Plugins propose; user config disposes — templates are never enforced.
+  repeated taskcore.v1.Rule rule_templates = 5;
 }
 
 message KindRegistration {

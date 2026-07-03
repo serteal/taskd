@@ -6,13 +6,24 @@ one query language, one rules engine, and one editing surface. Everything —
 CLI, TUI, web UI, MCP server, and every extension — is a gRPC peer of the
 daemon. See [DESIGN.md](DESIGN.md) for the full design.
 
-**Status: phases 0–2 complete** — native tasks end to end (daemon, store,
-change feed, CEL queries, saved views, CLI, export/backup) plus the plugin
-system: subprocess host with supervision, snapshot sync engine (tombstone
-grace, value-based echo silencing), persisted schema registry with an
-additive-only gate, keychain-backed secret store, plugin SDK + conformance
-suite, and the first real connector (read-only ICS calendars, recurrence
-included). Next per DESIGN.md §18: rules engine, then intents/outbox.
+**Status: phases 0–3 complete** — native tasks end to end (daemon, store,
+change feed, CEL queries, saved views, CLI, export/backup); the plugin
+system (subprocess host with supervision, snapshot sync engine with
+tombstone grace and value-based echo silencing, persisted schema registry
+with an additive-only gate, keychain-backed secret store, plugin SDK +
+conformance suite, read-only ICS calendar connector with recurrence); and
+the rules engine: edge-triggered `became` rules evaluated against
+before/after images (a doorbell, not a level check), cron-scheduled sweeps,
+provenance-guarded depth-capped cascades, a durable cursor with idempotent
+crash replay, YAML apply/export, DryRun + explicit backfill, and plugin
+rule templates. Next per DESIGN.md §18: intents + outbox (phase 4).
+
+```sh
+task rule apply -f rules.yaml    # became/schedule rules, DESIGN.md §7 shape
+task rule template ls            # starter rules shipped by plugins
+task rule dryrun <name>          # what would match right now
+task rule backfill <name>        # explicit retroactive application
+```
 
 ## Quick start
 

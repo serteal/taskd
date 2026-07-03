@@ -129,10 +129,12 @@ func (s *sqliteStore) MutateItem(ctx context.Context, id string, prov *taskcorev
 		// cause exactly the false conflicts the split exists to prevent.
 		// They are versioned by updated_at; a dedicated concurrency token
 		// can come with the relations-editing API.
-		if strings.HasPrefix(p, "todo.") {
+		// Presence paths ("todo", "mirror") count as their layer: a bare
+		// promotion is a todo-layer write.
+		if p == "todo" || strings.HasPrefix(p, "todo.") {
 			todoTouched = true
 		}
-		if strings.HasPrefix(p, "mirror.") {
+		if p == "mirror" || strings.HasPrefix(p, "mirror.") {
 			mirrorTouched = true
 		}
 	}

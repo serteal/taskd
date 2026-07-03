@@ -20,11 +20,13 @@ func TestDescriptorSet(t *testing.T) {
 		index[f.GetName()] = i
 	}
 
-	// The message's own file, its taskcore/v1 import, and the well-known
+	// The message's own file, its taskcore/v1 imports (schema_service, and
+	// rule.proto via Manifest.rule_templates), and the well-known
 	// google/protobuf deps must each appear exactly once.
 	for _, want := range []string{
 		"taskcore/plugin/v1/plugin.proto",
 		"taskcore/v1/schema_service.proto",
+		"taskcore/v1/rule.proto",
 		"google/protobuf/descriptor.proto",
 		"google/protobuf/duration.proto",
 		"google/protobuf/struct.proto",
@@ -40,8 +42,8 @@ func TestDescriptorSet(t *testing.T) {
 			t.Errorf("file %q appears %d times, want 1", name, n)
 		}
 	}
-	if len(set.GetFile()) != 5 {
-		t.Errorf("set has %d files, want 5: %v", len(set.GetFile()), fileNames(set.GetFile()))
+	if len(set.GetFile()) != 6 {
+		t.Errorf("set has %d files, want 6: %v", len(set.GetFile()), fileNames(set.GetFile()))
 	}
 
 	// Every dependency is in the set and precedes its importer.

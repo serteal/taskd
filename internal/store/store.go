@@ -79,6 +79,19 @@ type Store interface {
 	GetManifest(ctx context.Context, plugin string) (*pluginv1.Manifest, error)
 	ListManifests(ctx context.Context) ([]*pluginv1.Manifest, error)
 
+	// Rules: the store is the source of truth (files are import/export).
+	// ListRules returns evaluation order (position, then name); SaveRule
+	// with position 0 appends.
+	SaveRule(ctx context.Context, rule *taskcorev1.Rule) error
+	GetRule(ctx context.Context, name string) (*taskcorev1.Rule, error)
+	ListRules(ctx context.Context) ([]*taskcorev1.Rule, error)
+	DeleteRule(ctx context.Context, name string) error
+
+	// Meta is a small KV for engine bookkeeping (e.g. the rules engine's
+	// durable event cursor). GetMeta returns "" for absent keys.
+	GetMeta(ctx context.Context, key string) (string, error)
+	SetMeta(ctx context.Context, key, value string) error
+
 	SaveView(ctx context.Context, view *taskcorev1.View) error
 	GetView(ctx context.Context, name string) (*taskcorev1.View, error)
 	ListViews(ctx context.Context) ([]*taskcorev1.View, error)

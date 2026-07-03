@@ -41,6 +41,29 @@ func Manifest() *pluginv1.Manifest {
 				Types: types,
 			},
 		},
+		// Starter rules: proposals the user copies in via
+		// `task rule template apply ics/<name>` and edits freely.
+		RuleTemplates: []*taskcorev1.Rule{
+			{
+				Name:        "calendar-triage",
+				Description: "Promote events starting within 24h into todos",
+				Became:      `kind == "calendar.event" && !has(item.todo) && has_due && due < now + duration("24h")`,
+				Do: &taskcorev1.RuleActions{
+					Add:       true,
+					AddLabels: []string{"meeting"},
+				},
+			},
+			{
+				Name:        "calendar-autocomplete",
+				Description: "Complete promoted events once they have started",
+				Schedule:    &taskcorev1.Schedule{Cron: "0 * * * *"},
+				Where:       `kind == "calendar.event" && has(item.todo) && !completed && has_due && due < now`,
+				Do: &taskcorev1.RuleActions{
+					Complete:       true,
+					CompleteReason: "past",
+				},
+			},
+		},
 	}
 }
 
