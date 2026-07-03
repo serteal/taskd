@@ -4,7 +4,8 @@ An extensible personal task tracker: one local daemon that centralizes tasks,
 bugs, calendar events, and anything else trackable from many sources, with
 one query language, one rules engine, and one editing surface. Everything —
 CLI, TUI, web UI, MCP server, and every extension — is a gRPC peer of the
-daemon. See [DESIGN.md](DESIGN.md) for the full design.
+daemon. See [DESIGN.md](DESIGN.md) for the design rationale and
+[ARCHITECTURE.md](ARCHITECTURE.md) for the map of what exists.
 
 **Status: phases 0–5 complete** — native tasks end to end (daemon, store,
 change feed, CEL queries, saved views, CLI, export/backup); the plugin
