@@ -76,14 +76,15 @@ func (e *Engine) compileFilter(filter string) (*cel.Ast, cel.Program, error) {
 	if strings.TrimSpace(filter) == "" {
 		return nil, nil, nil
 	}
-	ast, iss := e.env.Compile(filter)
+	env := e.celEnv()
+	ast, iss := env.Compile(filter)
 	if iss != nil && iss.Err() != nil {
 		return nil, nil, fmt.Errorf("invalid filter: %w", iss.Err())
 	}
 	if !ast.OutputType().IsExactType(cel.BoolType) {
 		return nil, nil, fmt.Errorf("invalid filter: expression must evaluate to a boolean, but evaluates to %s", ast.OutputType())
 	}
-	prg, err := e.env.Program(ast)
+	prg, err := env.Program(ast)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid filter: %w", err)
 	}

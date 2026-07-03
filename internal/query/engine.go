@@ -6,11 +6,17 @@ package query
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	taskcorev1 "todoapp/gen/taskcore/v1"
@@ -69,14 +75,104 @@ func NewEngine(now func() time.Time) (*Engine, error) {
 	return e, nil
 }
 
+// celEnv returns the current environment. RegisterTypes swaps it; programs
+// compiled against an older environment remain valid.
+func (e *Engine) celEnv() *cel.Env {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.env
+}
+
+// RegisterTypes extends the CEL environment with a plugin's descriptor set
+// (Manifest.KindRegistration.types), so filters and bindings can traverse
+// typed extension payloads in mirror.data — Any values resolve by type_url
+// against these descriptors even though the daemon never linked the types.
+// Files already known to the environment (well-known types, taskcore) are
+// skipped; re-registering the same set is a no-op, which makes this safe to
+// call on every plugin start.
+func (e *Engine) RegisterTypes(fds *descriptorpb.FileDescriptorSet) error {
+	if fds == nil || len(fds.GetFile()) == 0 {
+		return nil
+	}
+	files, err := protodesc.NewFiles(fds)
+	if err != nil {
+		return fmt.Errorf("query: invalid descriptor set (must include transitive imports): %w", err)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var fresh []protoreflect.FileDescriptor
+	var rangeErr error
+	files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+		pkg := string(fd.Package())
+		if strings.HasPrefix(pkg, "google.protobuf") || strings.HasPrefix(pkg, "taskcore.") {
+			return true // already in the base environment
+		}
+		// Skip files whose types the env already knows (idempotent restarts).
+		known := true
+		msgs := fd.Messages()
+		for i := 0; i < msgs.Len(); i++ {
+			if _, found := e.env.CELTypeProvider().FindStructType(string(msgs.Get(i).FullName())); !found {
+				known = false
+				break
+			}
+		}
+		if known && msgs.Len() > 0 {
+			return true
+		}
+		fresh = append(fresh, fd)
+		return true
+	})
+	if rangeErr != nil {
+		return rangeErr
+	}
+	if len(fresh) == 0 {
+		return nil
+	}
+	ext, err := e.env.Extend(cel.TypeDescs(files))
+	if err != nil {
+		return fmt.Errorf("query: registering plugin types: %w", err)
+	}
+	// cel-go resolves Any payloads through the GLOBAL proto registry
+	// (anypb.UnmarshalNew), not the env's descriptor DB — so descriptor-only
+	// types must also be registered globally as dynamic types or every
+	// mirror.data traversal fails with "proto: not found". Idempotent
+	// (skip anything already linked or registered); additive for the
+	// process lifetime, which is exactly what a runtime schema registry is.
+	for _, fd := range fresh {
+		if err := registerDynamicTypes(fd.Messages()); err != nil {
+			return fmt.Errorf("query: registering dynamic types for %s: %w", fd.Path(), err)
+		}
+	}
+	e.env = ext
+	return nil
+}
+
+func registerDynamicTypes(msgs protoreflect.MessageDescriptors) error {
+	for i := 0; i < msgs.Len(); i++ {
+		md := msgs.Get(i)
+		if _, err := protoregistry.GlobalTypes.FindMessageByName(md.FullName()); err == nil {
+			continue // linked or previously registered
+		}
+		if err := protoregistry.GlobalTypes.RegisterMessage(dynamicpb.NewMessageType(md)); err != nil {
+			return err
+		}
+		if err := registerDynamicTypes(md.Messages()); err != nil { // nested types
+			return err
+		}
+	}
+	return nil
+}
+
 // RegisterKind compiles the kind's virtual-field bindings (CEL expressions
 // over the single input variable `item`) and stores the programs. A "due"
 // binding must produce a timestamp (or null/dyn, e.g. when reaching through
 // mirror.data extensions). Re-registering a kind replaces its bindings.
+// Call RegisterTypes first when the bindings reach into extension types.
 func (e *Engine) RegisterKind(kind string, virtual map[string]string) error {
+	env := e.celEnv()
 	programs := make(map[string]cel.Program, len(virtual))
 	for field, expr := range virtual {
-		ast, iss := e.env.Compile(expr)
+		ast, iss := env.Compile(expr)
 		if iss != nil && iss.Err() != nil {
 			return fmt.Errorf("query: kind %q: binding for %q does not compile: %w", kind, field, iss.Err())
 		}
@@ -86,7 +182,7 @@ func (e *Engine) RegisterKind(kind string, virtual map[string]string) error {
 				return fmt.Errorf("query: kind %q: binding for %q must evaluate to a timestamp or null, got %s", kind, field, out)
 			}
 		}
-		prg, err := e.env.Program(ast)
+		prg, err := env.Program(ast)
 		if err != nil {
 			return fmt.Errorf("query: kind %q: binding for %q: %w", kind, field, err)
 		}

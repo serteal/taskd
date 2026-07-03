@@ -71,7 +71,10 @@ func Diff(before, after *taskcorev1.Item) ([]*taskcorev1.FieldChange, error) {
 	d.cmpString("mirror.link.external_id", bl.GetExternalId(), al.GetExternalId())
 	d.cmpString("mirror.link.external_url", bl.GetExternalUrl(), al.GetExternalUrl())
 	d.cmpString("mirror.link.etag", bl.GetEtag(), al.GetEtag())
-	d.cmpTimestamp("mirror.link.last_synced_at", bl.GetLastSyncedAt(), al.GetLastSyncedAt())
+	// mirror.link.last_synced_at is bookkeeping, deliberately NOT compared:
+	// the sync engine stamps it in every applyRemote, and diffing it would
+	// turn every no-op poll cycle into a spurious event — defeating echo
+	// silencing. It persists only alongside a real change.
 	d.cmpString("mirror.title", bm.GetTitle(), am.GetTitle())
 	d.cmpString("mirror.state", bm.GetState(), am.GetState())
 	d.cmpAnyMap("mirror.data", bm.GetData(), am.GetData())

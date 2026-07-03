@@ -24,6 +24,13 @@ var ignoredItemFields = map[string]bool{
 	"updated_at":      true,
 }
 
+// ignoredLeafPaths are nested bookkeeping leaves Diff skips: the sync engine
+// stamps last_synced_at on every applyRemote, so diffing it would turn every
+// no-op poll cycle into a spurious event.
+var ignoredLeafPaths = map[string]bool{
+	"mirror.link.last_synced_at": true,
+}
+
 // TestDiffCoversEveryItemLeaf is the completeness guard: it enumerates every
 // leaf path of Item via protoreflect (per the differ's granularity rules,
 // minus the ignore list), sets each leaf to a non-zero value on an otherwise
@@ -67,6 +74,9 @@ func leafPaths(t *testing.T, prefix string, md protoreflect.MessageDescriptor, i
 		full := name
 		if prefix != "" {
 			full = prefix + "." + name
+		}
+		if ignoredLeafPaths[full] {
+			continue
 		}
 		switch {
 		case fd.IsList(), fd.IsMap():

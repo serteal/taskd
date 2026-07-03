@@ -17,6 +17,7 @@ test:
 build:
 	go build -o taskd ./cmd/taskd
 	go build -o task ./cmd/task
+	go build -o task-plugin-ics ./plugins/ics/cmd
 
 fmt:
 	gofmt -w cmd internal pkg plugins 2>/dev/null || true

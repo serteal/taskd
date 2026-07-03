@@ -16,12 +16,17 @@ import (
 
 	"google.golang.org/grpc"
 
+	pluginv1 "todoapp/gen/taskcore/plugin/v1"
 	taskcorev1 "todoapp/gen/taskcore/v1"
 	"todoapp/internal/clock"
 	"todoapp/internal/feed"
+	"todoapp/internal/plugin"
 	"todoapp/internal/query"
+	"todoapp/internal/schema"
+	"todoapp/internal/secret"
 	"todoapp/internal/server"
 	"todoapp/internal/store"
+	taskssync "todoapp/internal/sync"
 )
 
 type Config struct {
@@ -74,6 +79,14 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("data dir: %w", err)
 	}
 
+	fileCfg, err := loadFileConfig(cfg.Dir)
+	if err != nil {
+		return err
+	}
+	if cfg.Retention <= 0 && fileCfg.Retention > 0 {
+		cfg.Retention = fileCfg.Retention
+	}
+
 	eng, err := query.NewEngine(cfg.Clock.Now)
 	if err != nil {
 		return fmt.Errorf("query engine: %w", err)
@@ -88,6 +101,13 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("store: %w", err)
 	}
 	defer st.Close()
+
+	// The schema registry restores persisted manifests before anything
+	// queries: kinds outlive their plugins.
+	registry := schema.NewRegistry(st, eng)
+	if err := registry.Load(ctx); err != nil {
+		return err
+	}
 
 	if err := seedDefaultViews(ctx, st); err != nil {
 		return fmt.Errorf("seed views: %w", err)
@@ -123,9 +143,48 @@ func Run(ctx context.Context, cfg Config) error {
 	defer os.Remove(pidfile)
 
 	hub := feed.NewHub()
-	srv := server.New(st, hub, eng, cfg.Clock, clock.NewIDGen(cfg.Clock, cfg.IDSeed))
+	ids := clock.NewIDGen(cfg.Clock, cfg.IDSeed)
+	srv := server.New(st, hub, eng, cfg.Clock, ids, registry.Kinds)
 	g := grpc.NewServer()
 	srv.Register(g)
+
+	// Connector instances: plugin host + sync engine. A failing instance
+	// logs and is skipped — one bad plugin never takes the daemon down.
+	if len(fileCfg.Instances) > 0 {
+		secrets, err := secret.Open("", cfg.Dir)
+		if err != nil {
+			return fmt.Errorf("secret store: %w", err)
+		}
+		host := plugin.NewHost(plugin.HostOptions{
+			RuntimeDir: filepath.Join(cfg.Dir, "run"),
+			Secrets:    secrets,
+			Log:        cfg.Log,
+			Clock:      cfg.Clock,
+		})
+		syncEng := taskssync.NewEngine(st, hub, cfg.Clock, ids, cfg.Log, 0)
+		for _, ic := range fileCfg.Instances {
+			inst, err := resolveInstance(cfg.Dir, ic)
+			if err != nil {
+				cfg.Log.Error("skipping instance", "err", err)
+				continue
+			}
+			go func() {
+				running, err := host.Start(ctx, inst, func(m *pluginv1.Manifest) error {
+					return registry.RegisterManifest(ctx, m)
+				})
+				if err != nil {
+					if ctx.Err() == nil {
+						cfg.Log.Error("instance failed to start", "instance", inst.Name, "err", err)
+					}
+					return
+				}
+				defer running.Stop()
+				cfg.Log.Info("instance running", "instance", inst.Name,
+					"plugin", running.Manifest().GetName(), "poll", running.Poll())
+				syncEng.RunInstance(ctx, running.Source(), running.Poll())
+			}()
+		}
+	}
 
 	// Retention: trim on start and periodically. Trimming never loses state
 	// (the log is derivable history); lagging watchers resync.

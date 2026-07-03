@@ -24,15 +24,19 @@ var Version = "0.1.0-dev"
 const NativeKind = "task"
 
 type Server struct {
-	st  store.Store
-	hub *feed.Hub
-	eng *query.Engine
-	clk clock.Clock
-	ids clock.IDGen
+	st    store.Store
+	hub   *feed.Hub
+	eng   *query.Engine
+	clk   clock.Clock
+	ids   clock.IDGen
+	kinds func() []*taskcorev1.KindInfo // the schema registry's merged view
 }
 
-func New(st store.Store, hub *feed.Hub, eng *query.Engine, clk clock.Clock, ids clock.IDGen) *Server {
-	return &Server{st: st, hub: hub, eng: eng, clk: clk, ids: ids}
+func New(st store.Store, hub *feed.Hub, eng *query.Engine, clk clock.Clock, ids clock.IDGen, kinds func() []*taskcorev1.KindInfo) *Server {
+	if kinds == nil {
+		kinds = func() []*taskcorev1.KindInfo { return nil }
+	}
+	return &Server{st: st, hub: hub, eng: eng, clk: clk, ids: ids, kinds: kinds}
 }
 
 // Register attaches all taskcore.v1 services to g.

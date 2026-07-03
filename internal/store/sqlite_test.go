@@ -227,8 +227,10 @@ func TestMutateMirrorBumpsOnlyMirrorRevision(t *testing.T) {
 	}
 }
 
-func TestMutateRelationsBumpsTodoRevision(t *testing.T) {
-	// Relations count as todo-layer in phase 1 (the user is their only writer).
+func TestMutateRelationsBumpsNeitherRevision(t *testing.T) {
+	// Relations are core-owned wiring written by both sync and users, so
+	// they bump neither layer's optimistic-concurrency counter (phase-2
+	// decision) — but the change still produces an event.
 	e := newEnv(t)
 	item := e.newItem(nil)
 	e.mustCreate(t, item)
@@ -242,8 +244,8 @@ func TestMutateRelationsBumpsTodoRevision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MutateItem: %v", err)
 	}
-	if got.GetTodoRevision() != 1 {
-		t.Errorf("todo_revision = %d, want 1", got.GetTodoRevision())
+	if got.GetTodoRevision() != 0 {
+		t.Errorf("todo_revision = %d, want 0", got.GetTodoRevision())
 	}
 	if got.GetMirrorRevision() != 0 {
 		t.Errorf("mirror_revision = %d, want 0", got.GetMirrorRevision())

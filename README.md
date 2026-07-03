@@ -6,10 +6,13 @@ one query language, one rules engine, and one editing surface. Everything —
 CLI, TUI, web UI, MCP server, and every extension — is a gRPC peer of the
 daemon. See [DESIGN.md](DESIGN.md) for the full design.
 
-**Status: phases 0–1 complete** — native tasks end to end: daemon, store,
-change feed, CEL queries, saved views, CLI, export/backup. Next phases per
-DESIGN.md §18: plugin host + first connector, rules engine, intents/outbox,
-MCP, TUI/web.
+**Status: phases 0–2 complete** — native tasks end to end (daemon, store,
+change feed, CEL queries, saved views, CLI, export/backup) plus the plugin
+system: subprocess host with supervision, snapshot sync engine (tombstone
+grace, value-based echo silencing), persisted schema registry with an
+additive-only gate, keychain-backed secret store, plugin SDK + conformance
+suite, and the first real connector (read-only ICS calendars, recurrence
+included). Next per DESIGN.md §18: rules engine, then intents/outbox.
 
 ## Quick start
 
@@ -24,7 +27,21 @@ make build          # builds ./taskd and ./task
 
 Data lives in `~/.local/share/taskd` (override: `TASKD_DIR`): SQLite database,
 unix socket (0600 — the socket's file permissions are the security boundary),
-pidfile.
+pidfile, plugin binaries under `plugins/`, and `config.yaml`:
+
+```yaml
+instances:
+  - name: cal@personal        # instance name = link namespace
+    plugin: ics               # bare name → $TASKD_DIR/plugins/ics
+    poll: 5m
+    config:
+      url: https://calendar.google.com/calendar/ical/…/basic.ics
+      horizon_days: 60
+```
+
+Mirrored items land un-triaged in the `inbox` view (`task ls inbox`); promote
+one by editing it (`task edit <id> -p work`) and it joins your active list —
+sync keeps its calendar half fresh and never touches your half.
 
 ## Layout
 

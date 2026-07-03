@@ -73,8 +73,8 @@ func (s *sqliteStore) CreateItem(ctx context.Context, item *taskcorev1.Item, pro
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO items (id, kind, blob, completed, project, due_unix, snoozed_until_unix, created_at_unix, updated_at_unix)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO items (id, kind, blob, completed, project, due_unix, snoozed_until_unix, created_at_unix, updated_at_unix, connector_instance, external_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		append([]any{stored.GetId(), stored.GetKind(), blob}, args...)...,
 	); err != nil {
 		return nil, fmt.Errorf("store: insert item %s: %w", stored.GetId(), err)
@@ -123,11 +123,13 @@ func (s *sqliteStore) MutateItem(ctx context.Context, id string, prov *taskcorev
 	todoTouched, mirrorTouched := false, false
 	for _, c := range changes {
 		p := c.GetPath()
-		// Relations count as todo-layer in phase 1: the user is the only
-		// writer of relations (sync never touches them yet), so a relations
-		// edit bumps todo_revision. Revisit if connectors ever mirror
-		// remote cross-references into relations.
-		if strings.HasPrefix(p, "todo.") || p == "relations" {
+		// Relations bump NEITHER revision (phase-2 decision): they are
+		// core-owned wiring written by both sync (series INSTANCE_OF) and,
+		// later, users/rules — tying them to either layer's counter would
+		// cause exactly the false conflicts the split exists to prevent.
+		// They are versioned by updated_at; a dedicated concurrency token
+		// can come with the relations-editing API.
+		if strings.HasPrefix(p, "todo.") {
 			todoTouched = true
 		}
 		if strings.HasPrefix(p, "mirror.") {
@@ -148,7 +150,7 @@ func (s *sqliteStore) MutateItem(ctx context.Context, id string, prov *taskcorev
 		return nil, nil, err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE items SET kind = ?, blob = ?, completed = ?, project = ?, due_unix = ?, snoozed_until_unix = ?, created_at_unix = ?, updated_at_unix = ?
+		`UPDATE items SET kind = ?, blob = ?, completed = ?, project = ?, due_unix = ?, snoozed_until_unix = ?, created_at_unix = ?, updated_at_unix = ?, connector_instance = ?, external_id = ?
 		 WHERE id = ?`,
 		append(append([]any{after.GetKind(), blob}, args...), id)...,
 	); err != nil {
@@ -560,6 +562,8 @@ func itemArgs(item *taskcorev1.Item, extract func(*taskcorev1.Item) Indexed) ([]
 		snoozed,
 		item.GetCreatedAt().AsTime().UnixNano(),
 		item.GetUpdatedAt().AsTime().UnixNano(),
+		item.GetMirror().GetLink().GetConnectorInstance(),
+		item.GetMirror().GetLink().GetExternalId(),
 	}
 	return blob, args, nil
 }

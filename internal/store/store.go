@@ -8,6 +8,7 @@ import (
 	"errors"
 	"time"
 
+	pluginv1 "todoapp/gen/taskcore/plugin/v1"
 	taskcorev1 "todoapp/gen/taskcore/v1"
 )
 
@@ -63,6 +64,20 @@ type Store interface {
 	// most recent event so LatestCursor survives trimming. Returns the count
 	// removed.
 	TrimEvents(ctx context.Context, cutoff time.Time) (int64, error)
+
+	// GetItemByExternal looks up the item mirroring (instance, externalID);
+	// ErrNotFound when nothing mirrors it.
+	GetItemByExternal(ctx context.Context, instance, externalID string) (*taskcorev1.Item, error)
+	// ListInstanceItems returns every item whose mirror link belongs to the
+	// connector instance (the sync engine's reconciliation set — bounded by
+	// the instance's scope, e.g. a calendar horizon).
+	ListInstanceItems(ctx context.Context, instance string) ([]*taskcorev1.Item, error)
+
+	// Manifests are persisted so kinds stay renderable, filterable, and
+	// exportable after their plugin is uninstalled.
+	SaveManifest(ctx context.Context, m *pluginv1.Manifest) error
+	GetManifest(ctx context.Context, plugin string) (*pluginv1.Manifest, error)
+	ListManifests(ctx context.Context) ([]*pluginv1.Manifest, error)
 
 	SaveView(ctx context.Context, view *taskcorev1.View) error
 	GetView(ctx context.Context, name string) (*taskcorev1.View, error)

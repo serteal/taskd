@@ -42,6 +42,20 @@ var migrations = []string{
 	CREATE INDEX idx_items_updated_at ON items(updated_at_unix);
 	CREATE INDEX idx_items_kind ON items(kind);
 	CREATE INDEX idx_events_recorded_at ON events(recorded_at_unix);`,
+
+	// 002 (phase 2): external identity columns so the sync engine can
+	// reconcile snapshots by (connector_instance, external_id), and persisted
+	// plugin manifests so kinds outlive their plugins (descriptors are the
+	// schema registry — DESIGN.md §2.5).
+	`ALTER TABLE items ADD COLUMN connector_instance TEXT NOT NULL DEFAULT '';
+	ALTER TABLE items ADD COLUMN external_id TEXT NOT NULL DEFAULT '';
+	CREATE INDEX idx_items_external ON items(connector_instance, external_id);
+	CREATE TABLE manifests (
+		plugin TEXT PRIMARY KEY,
+		version TEXT NOT NULL,
+		payload BLOB NOT NULL,
+		stored_at_unix INTEGER NOT NULL
+	);`,
 }
 
 // applyMigrations brings the database to the latest schema version.

@@ -41,7 +41,9 @@ func newLsCmd(a *app) *cobra.Command {
 			case all:
 				base = ""
 			default:
-				base, orderBy = `!completed && !snoozed`, "due"
+				// Active only: has a todo (un-triaged mirrors live in the
+				// `inbox` view, not here), not completed, not snoozed.
+				base, orderBy = `has(item.todo) && !completed && !snoozed`, "due"
 			}
 
 			frags := []string{base}
