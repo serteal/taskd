@@ -18,6 +18,7 @@ import (
 
 	pluginv1 "todoapp/gen/taskcore/plugin/v1"
 	taskcorev1 "todoapp/gen/taskcore/v1"
+	"todoapp/internal/contrib"
 	"todoapp/internal/query"
 	"todoapp/internal/rules"
 	"todoapp/internal/store"
@@ -27,18 +28,20 @@ import (
 const NativeKind = "task"
 
 type Registry struct {
-	st  store.Store
-	eng *query.Engine
+	st   store.Store
+	eng  *query.Engine
+	rend *contrib.Renderer
 
 	mu    sync.RWMutex
 	kinds map[string]*taskcorev1.KindInfo // merged view for SchemaService
 	owner map[string]string               // kind -> plugin name (collision guard)
 }
 
-func NewRegistry(st store.Store, eng *query.Engine) *Registry {
+func NewRegistry(st store.Store, eng *query.Engine, rend *contrib.Renderer) *Registry {
 	r := &Registry{
 		st:    st,
 		eng:   eng,
+		rend:  rend,
 		kinds: make(map[string]*taskcorev1.KindInfo),
 		owner: make(map[string]string),
 	}
@@ -128,8 +131,18 @@ func (r *Registry) apply(m *pluginv1.Manifest) error {
 		if err := r.eng.RegisterKind(k.GetKind(), virtual); err != nil {
 			return err
 		}
-		r.kinds[k.GetKind()] = &taskcorev1.KindInfo{Kind: k.GetKind(), Facets: k.GetFacets()}
+		r.kinds[k.GetKind()] = &taskcorev1.KindInfo{Kind: k.GetKind(), Facets: k.GetFacets(), Types: k.GetTypes()}
 		r.owner[k.GetKind()] = m.GetName()
+	}
+	// Presentations register after kinds/types so their expressions can
+	// reach extension data; a broken contribution refuses the plugin, same
+	// policy as rule templates.
+	if r.rend != nil {
+		for _, p := range m.GetPresentations() {
+			if err := r.rend.Register(p); err != nil {
+				return fmt.Errorf("schema: plugin %q ships a broken presentation: %w", m.GetName(), err)
+			}
+		}
 	}
 	return nil
 }

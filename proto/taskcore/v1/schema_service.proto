@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package taskcore.v1;
 
+import "google/protobuf/descriptor.proto";
+
 option go_package = "todoapp/gen/taskcore/v1;taskcorev1";
 
 // SchemaService exposes the kind/facet registry. Phase 1 registers only the
@@ -20,6 +22,11 @@ message ListKindsResponse {
 message KindInfo {
   string kind = 1;
   repeated FacetBinding facets = 2;
+  // The kind's extension-type descriptors. Clients that render or marshal
+  // items (protojson of mirror.data Any payloads) register these as dynamic
+  // types — the same reflection the daemon itself uses, so a client never
+  // needs to link plugin code.
+  google.protobuf.FileDescriptorSet types = 3;
 }
 
 // FacetBinding declares a capability and binds its virtual fields to CEL

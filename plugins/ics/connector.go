@@ -14,6 +14,7 @@ import (
 	icspluginv1 "todoapp/gen/icsplugin/v1"
 	pluginv1 "todoapp/gen/taskcore/plugin/v1"
 	taskcorev1 "todoapp/gen/taskcore/v1"
+	viewv1 "todoapp/gen/taskcore/view/v1"
 	"todoapp/pkg/taskplugin"
 )
 
@@ -39,6 +40,22 @@ func Manifest() *pluginv1.Manifest {
 			{
 				Kind:  "calendar.series",
 				Types: types,
+			},
+		},
+		// Display contributions: the web/TUI/CLI all render these natively
+		// from the semantic vocabulary; nothing here is widget code.
+		Presentations: []*viewv1.Presentation{
+			{
+				Kind:    "calendar.event",
+				Columns: []*viewv1.ColumnDef{{Id: "location", Label: "WHERE", Expr: `item.mirror.data["event"].location`}},
+				Badges: []*viewv1.BadgeRule{
+					{When: `state == "cancelled"`, Label: "cancelled", Tone: viewv1.Tone_TONE_DANGER},
+					{When: `state == "tentative"`, Label: "tentative", Tone: viewv1.Tone_TONE_WARNING},
+				},
+			},
+			{
+				Kind:   "calendar.series",
+				Badges: []*viewv1.BadgeRule{{When: `true`, Label: "series", Tone: viewv1.Tone_TONE_INFO}},
 			},
 		},
 		// Starter rules: proposals the user copies in via

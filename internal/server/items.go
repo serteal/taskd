@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	taskcorev1 "todoapp/gen/taskcore/v1"
+	"todoapp/internal/contrib"
 	"todoapp/internal/intent"
 	"todoapp/internal/store"
 	tasksync "todoapp/internal/sync"
@@ -358,11 +359,17 @@ func (i *itemService) QueryItems(ctx context.Context, req *taskcorev1.QueryItems
 	if err != nil {
 		return nil, storeErr(err)
 	}
-	return &taskcorev1.QueryItemsResponse{
+	resp := &taskcorev1.QueryItemsResponse{
 		Items:         res.Items,
 		NextPageToken: res.NextPageToken,
 		Cursor:        res.Cursor,
-	}, nil
+	}
+	if req.GetRender() != nil {
+		cols := contrib.Columns(req.GetRender())
+		resp.RenderColumns = cols
+		resp.Rows = i.s.render.Render(res.Items, cols, i.s.clk.Now())
+	}
+	return resp, nil
 }
 
 var orderColumns = map[string]bool{

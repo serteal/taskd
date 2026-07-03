@@ -26,6 +26,9 @@ type ViewServiceClient interface {
 	GetView(ctx context.Context, in *GetViewRequest, opts ...grpc.CallOption) (*GetViewResponse, error)
 	ListViews(ctx context.Context, in *ListViewsRequest, opts ...grpc.CallOption) (*ListViewsResponse, error)
 	DeleteView(ctx context.Context, in *DeleteViewRequest, opts ...grpc.CallOption) (*DeleteViewResponse, error)
+	// The merged display contributions (native + every registered plugin
+	// kind) — what a frontend needs to know which columns exist.
+	ListPresentations(ctx context.Context, in *ListPresentationsRequest, opts ...grpc.CallOption) (*ListPresentationsResponse, error)
 }
 
 type viewServiceClient struct {
@@ -72,6 +75,15 @@ func (c *viewServiceClient) DeleteView(ctx context.Context, in *DeleteViewReques
 	return out, nil
 }
 
+func (c *viewServiceClient) ListPresentations(ctx context.Context, in *ListPresentationsRequest, opts ...grpc.CallOption) (*ListPresentationsResponse, error) {
+	out := new(ListPresentationsResponse)
+	err := c.cc.Invoke(ctx, "/taskcore.v1.ViewService/ListPresentations", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ViewServiceServer is the server API for ViewService service.
 // All implementations must embed UnimplementedViewServiceServer
 // for forward compatibility
@@ -80,6 +92,9 @@ type ViewServiceServer interface {
 	GetView(context.Context, *GetViewRequest) (*GetViewResponse, error)
 	ListViews(context.Context, *ListViewsRequest) (*ListViewsResponse, error)
 	DeleteView(context.Context, *DeleteViewRequest) (*DeleteViewResponse, error)
+	// The merged display contributions (native + every registered plugin
+	// kind) — what a frontend needs to know which columns exist.
+	ListPresentations(context.Context, *ListPresentationsRequest) (*ListPresentationsResponse, error)
 	mustEmbedUnimplementedViewServiceServer()
 }
 
@@ -98,6 +113,9 @@ func (UnimplementedViewServiceServer) ListViews(context.Context, *ListViewsReque
 }
 func (UnimplementedViewServiceServer) DeleteView(context.Context, *DeleteViewRequest) (*DeleteViewResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteView not implemented")
+}
+func (UnimplementedViewServiceServer) ListPresentations(context.Context, *ListPresentationsRequest) (*ListPresentationsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListPresentations not implemented")
 }
 func (UnimplementedViewServiceServer) mustEmbedUnimplementedViewServiceServer() {}
 
@@ -184,6 +202,24 @@ func _ViewService_DeleteView_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ViewService_ListPresentations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPresentationsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ViewServiceServer).ListPresentations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/taskcore.v1.ViewService/ListPresentations",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ViewServiceServer).ListPresentations(ctx, req.(*ListPresentationsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ViewService_ServiceDesc is the grpc.ServiceDesc for ViewService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -206,6 +242,10 @@ var ViewService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteView",
 			Handler:    _ViewService_DeleteView_Handler,
+		},
+		{
+			MethodName: "ListPresentations",
+			Handler:    _ViewService_ListPresentations_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

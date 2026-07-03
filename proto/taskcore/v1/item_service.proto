@@ -6,6 +6,7 @@ import "google/protobuf/field_mask.proto";
 import "taskcore/v1/event.proto";
 import "taskcore/v1/intent.proto";
 import "taskcore/v1/item.proto";
+import "taskcore/view/v1/contribution.proto";
 
 option go_package = "todoapp/gen/taskcore/v1;taskcorev1";
 
@@ -107,6 +108,9 @@ message QueryItemsRequest {
   // Defaults to 100, capped at 1000.
   int32 page_size = 3;
   string page_token = 4;
+  // When set, the core renders display rows server-side (frontends never
+  // evaluate contribution expressions themselves).
+  taskcore.view.v1.RenderSpec render = 5;
 }
 
 message QueryItemsResponse {
@@ -115,6 +119,10 @@ message QueryItemsResponse {
   // The change-feed cursor this snapshot is consistent with. Resume Watch
   // from here for a gapless snapshot-then-follow.
   uint64 cursor = 3;
+  // Present when the request carried a RenderSpec: one row per item, cells
+  // aligned with render_columns.
+  repeated taskcore.view.v1.RenderedRow rows = 4;
+  repeated string render_columns = 5;
 }
 
 message WatchRequest {

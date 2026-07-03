@@ -124,6 +124,11 @@ func (a *app) dial(cmd *cobra.Command) error {
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"warning: daemon version %s differs from CLI version %s\n", v, server.Version)
 	}
+	// Plugin extension types, so --json/export can marshal Any payloads
+	// without linking plugin code. Best-effort: rendering falls back.
+	if err := cl.SyncTypes(pingCtx); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: syncing plugin types: %v\n", err)
+	}
 	a.client = cl
 	return nil
 }

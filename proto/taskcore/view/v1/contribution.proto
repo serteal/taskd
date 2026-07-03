@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package taskcore.view.v1;
+
+import "taskcore/view/v1/display.proto";
+
+option go_package = "todoapp/gen/taskcore/view/v1;viewv1";
+
+// Presentation is a kind's declarative display contribution, shipped in the
+// plugin manifest and validated at registration (a contribution that ships
+// is a contribution that renders). The core is the single renderer: it
+// evaluates the expressions server-side and hands frontends finished
+// DisplayValues — frontends never embed CEL and never talk to plugins.
+message Presentation {
+  string kind = 1;
+  // Extra columns for this kind, addressable by id in RenderSpec alongside
+  // the built-ins (id, title, project, labels, due, state, kind, age).
+  // A kind column with a built-in id overrides the built-in for its items.
+  repeated ColumnDef columns = 2;
+  // Badges attached to every rendered row of this kind (list summaries).
+  repeated BadgeRule badges = 3;
+}
+
+message ColumnDef {
+  string id = 1;
+  string label = 2;
+  // CEL over `item`. The result maps by type: string→text,
+  // timestamp→datetime, int→count, duration→duration, bool→text("✓"/"");
+  // evaluation errors render as empty text, never break a listing.
+  string expr = 3;
+}
+
+message BadgeRule {
+  // CEL over `item`; the badge appears when it evaluates true.
+  string when = 1;
+  string label = 2;
+  Tone tone = 3;
+}
+
+// RenderSpec asks QueryItems for server-side rendering. Empty columns means
+// the consumer default (id, title, project, labels, due).
+message RenderSpec {
+  repeated string columns = 1;
+}
+
+// RenderedRow is one item's finished display cells, aligned with the
+// effective column list echoed in the response.
+message RenderedRow {
+  string item_id = 1;
+  repeated DisplayValue cells = 2;
+  repeated Badge badges = 3;
+}

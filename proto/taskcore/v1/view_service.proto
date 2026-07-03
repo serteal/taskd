@@ -3,6 +3,7 @@ syntax = "proto3";
 package taskcore.v1;
 
 import "taskcore/v1/view.proto";
+import "taskcore/view/v1/contribution.proto";
 
 option go_package = "todoapp/gen/taskcore/v1;taskcorev1";
 
@@ -13,6 +14,15 @@ service ViewService {
   rpc GetView(GetViewRequest) returns (GetViewResponse);
   rpc ListViews(ListViewsRequest) returns (ListViewsResponse);
   rpc DeleteView(DeleteViewRequest) returns (DeleteViewResponse);
+  // The merged display contributions (native + every registered plugin
+  // kind) — what a frontend needs to know which columns exist.
+  rpc ListPresentations(ListPresentationsRequest) returns (ListPresentationsResponse);
+}
+
+message ListPresentationsRequest {}
+
+message ListPresentationsResponse {
+  repeated taskcore.view.v1.Presentation presentations = 1;
 }
 
 message SaveViewRequest {

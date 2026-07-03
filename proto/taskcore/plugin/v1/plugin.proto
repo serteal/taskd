@@ -7,6 +7,7 @@ import "google/protobuf/duration.proto";
 import "google/protobuf/struct.proto";
 import "taskcore/v1/rule.proto";
 import "taskcore/v1/schema_service.proto";
+import "taskcore/view/v1/contribution.proto";
 
 option go_package = "todoapp/gen/taskcore/plugin/v1;pluginv1";
 
@@ -44,6 +45,9 @@ message Manifest {
   // their config (via RuleService.ListRuleTemplates) and edits freely.
   // Plugins propose; user config disposes — templates are never enforced.
   repeated taskcore.v1.Rule rule_templates = 5;
+  // Display contributions for this plugin's kinds, validated at
+  // registration exactly like rule templates.
+  repeated taskcore.view.v1.Presentation presentations = 6;
 }
 
 message KindRegistration {

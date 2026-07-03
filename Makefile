@@ -18,6 +18,8 @@ build:
 	go build -o taskd ./cmd/taskd
 	go build -o task ./cmd/task
 	go build -o task-plugin-ics ./plugins/ics/cmd
+	go build -o task-mcp ./cmd/task-mcp
+	go build -o task-plugin-todotxt ./plugins/todotxt/cmd
 
 fmt:
 	gofmt -w cmd internal pkg plugins 2>/dev/null || true

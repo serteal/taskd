@@ -20,6 +20,7 @@ import (
 
 	pluginv1 "todoapp/gen/taskcore/plugin/v1"
 	taskcorev1 "todoapp/gen/taskcore/v1"
+	viewv1 "todoapp/gen/taskcore/view/v1"
 	todotxtpluginv1 "todoapp/gen/todotxtplugin/v1"
 	"todoapp/pkg/taskplugin"
 )
@@ -48,6 +49,12 @@ func Manifest() *pluginv1.Manifest {
 				Types: types,
 			},
 		},
+		// Display contributions.
+		Presentations: []*viewv1.Presentation{{
+			Kind:    KindTask,
+			Columns: []*viewv1.ColumnDef{{Id: "priority", Label: "PRI", Expr: `item.mirror.data["task"].priority`}},
+			Badges:  []*viewv1.BadgeRule{{When: `state == "done"`, Label: "done in file", Tone: viewv1.Tone_TONE_SUCCESS}},
+		}},
 		// Starter rule: the user copies it in via RuleService and edits freely.
 		// This is the bidirectional half — local completion pushed back to the
 		// file as a set_completed intent.

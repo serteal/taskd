@@ -54,6 +54,10 @@ func (v *viewService) ListViews(ctx context.Context, _ *taskcorev1.ListViewsRequ
 	return &taskcorev1.ListViewsResponse{Views: views}, nil
 }
 
+func (v *viewService) ListPresentations(ctx context.Context, _ *taskcorev1.ListPresentationsRequest) (*taskcorev1.ListPresentationsResponse, error) {
+	return &taskcorev1.ListPresentationsResponse{Presentations: v.s.render.Presentations()}, nil
+}
+
 func (v *viewService) DeleteView(ctx context.Context, req *taskcorev1.DeleteViewRequest) (*taskcorev1.DeleteViewResponse, error) {
 	if err := v.s.st.DeleteView(ctx, req.GetName()); err != nil {
 		return nil, storeErr(err)

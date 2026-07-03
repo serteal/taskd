@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package taskcore.view.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "todoapp/gen/taskcore/view/v1;viewv1";
+
+// DisplayValue is the closed display vocabulary — the whole trick of the
+// N-plugins x M-frontends problem. Contributions can only express meaning
+// (a badge with a tone, a person, progress), never widgets, so every
+// frontend renders every plugin natively and degradation is automatic:
+// web shows a red chip, the TUI prints [urgent] in ANSI red, the CLI prints
+// plain text, an agent reads text. A plugin cannot express a contribution
+// that only works in one frontend.
+message DisplayValue {
+  oneof value {
+    string text = 1;
+    Badge badge = 2;
+    google.protobuf.Timestamp datetime = 3;
+    google.protobuf.Duration duration = 4;
+    Person person = 5;
+    Link link = 6;
+    Progress progress = 7;
+    // Symbolic icon name from the core-defined set, never image data.
+    string icon = 8;
+    int64 count = 9;
+  }
+}
+
+message Badge {
+  string label = 1;
+  Tone tone = 2;
+}
+
+// Tones are semantic, never colors: each frontend maps them to its medium.
+enum Tone {
+  TONE_UNSPECIFIED = 0;
+  TONE_NEUTRAL = 1;
+  TONE_INFO = 2;
+  TONE_SUCCESS = 3;
+  TONE_WARNING = 4;
+  TONE_DANGER = 5;
+  TONE_ACCENT = 6;
+}
+
+message Person {
+  string name = 1;
+  string avatar_url = 2;
+}
+
+message Link {
+  string label = 1;
+  string url = 2;
+}
+
+message Progress {
+  int64 done = 1;
+  int64 total = 2;
+}

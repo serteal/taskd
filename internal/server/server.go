@@ -12,6 +12,7 @@ import (
 
 	taskcorev1 "todoapp/gen/taskcore/v1"
 	"todoapp/internal/clock"
+	"todoapp/internal/contrib"
 	"todoapp/internal/feed"
 	"todoapp/internal/intent"
 	"todoapp/internal/query"
@@ -42,6 +43,8 @@ type Options struct {
 	Intents *intent.Router
 	// Dispatch resolves remote refs for LinkItem (the plugin registry).
 	Dispatch intent.Dispatcher
+	// Render is the contribution renderer (core-side display rows).
+	Render *contrib.Renderer
 }
 
 type Server struct {
@@ -54,6 +57,7 @@ type Server struct {
 	backfill func(ctx context.Context, name string) (int, error)
 	intents  *intent.Router
 	dispatch intent.Dispatcher
+	render   *contrib.Renderer
 }
 
 func New(o Options) *Server {
@@ -65,9 +69,13 @@ func New(o Options) *Server {
 			return 0, errors.New("rules engine not running")
 		}
 	}
+	if o.Render == nil {
+		o.Render = contrib.NewRenderer(o.Eng)
+	}
 	return &Server{
 		st: o.Store, hub: o.Hub, eng: o.Eng, clk: o.Clock, ids: o.IDs,
 		kinds: o.Kinds, backfill: o.Backfill, intents: o.Intents, dispatch: o.Dispatch,
+		render: o.Render,
 	}
 }
 

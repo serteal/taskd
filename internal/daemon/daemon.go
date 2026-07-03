@@ -19,6 +19,7 @@ import (
 	pluginv1 "todoapp/gen/taskcore/plugin/v1"
 	taskcorev1 "todoapp/gen/taskcore/v1"
 	"todoapp/internal/clock"
+	"todoapp/internal/contrib"
 	"todoapp/internal/feed"
 	"todoapp/internal/intent"
 	"todoapp/internal/plugin"
@@ -105,8 +106,10 @@ func Run(ctx context.Context, cfg Config) error {
 	defer st.Close()
 
 	// The schema registry restores persisted manifests before anything
-	// queries: kinds outlive their plugins.
-	registry := schema.NewRegistry(st, eng)
+	// queries: kinds outlive their plugins. The renderer receives their
+	// display contributions the same way.
+	renderer := contrib.NewRenderer(eng)
+	registry := schema.NewRegistry(st, eng, renderer)
 	if err := registry.Load(ctx); err != nil {
 		return err
 	}
@@ -167,7 +170,7 @@ func Run(ctx context.Context, cfg Config) error {
 	srv := server.New(server.Options{
 		Store: st, Hub: hub, Eng: eng, Clock: cfg.Clock, IDs: ids,
 		Kinds: registry.Kinds, Backfill: rulesEng.Backfill,
-		Intents: router, Dispatch: instances,
+		Intents: router, Dispatch: instances, Render: renderer,
 	})
 	g := grpc.NewServer()
 	srv.Register(g)

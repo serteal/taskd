@@ -2,13 +2,13 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	taskcorev1 "todoapp/gen/taskcore/v1"
+	viewv1 "todoapp/gen/taskcore/view/v1"
 )
 
 func newLsCmd(a *app) *cobra.Command {
@@ -57,12 +57,27 @@ func newLsCmd(a *app) *cobra.Command {
 				frags = append(frags, filter)
 			}
 
+			// Server-side rendering: the core evaluates contribution
+			// expressions and effective dues (override-wins through facet
+			// bindings) — this CLI never could for plugin kinds.
 			var items []*taskcorev1.Item
-			if _, err := a.client.QueryAll(ctx, andFilter(frags...), orderBy, func(it *taskcorev1.Item) error {
-				items = append(items, it)
-				return nil
-			}); err != nil {
-				return err
+			var rows []*viewv1.RenderedRow
+			token := ""
+			for {
+				resp, err := a.client.Items().QueryItems(ctx, &taskcorev1.QueryItemsRequest{
+					Filter: andFilter(frags...), OrderBy: orderBy,
+					PageSize: 200, PageToken: token,
+					Render: &viewv1.RenderSpec{Columns: []string{"id", "title", "project", "labels", "due"}},
+				})
+				if err != nil {
+					return err
+				}
+				items = append(items, resp.GetItems()...)
+				rows = append(rows, resp.GetRows()...)
+				token = resp.GetNextPageToken()
+				if token == "" {
+					break
+				}
 			}
 
 			if a.json {
@@ -81,17 +96,24 @@ func newLsCmd(a *app) *cobra.Command {
 			prefix := uniquePrefixes(ids)
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
 			fmt.Fprintln(w, "ID\tTITLE\tPROJECT\tLABELS\tDUE")
-			for _, it := range items {
-				title := itemTitle(it)
-				if it.GetTodo().GetCompleted() {
+			for i, row := range rows {
+				title := row.GetCells()[1].GetText()
+				if items[i].GetTodo().GetCompleted() {
 					title = "✓ " + title
 				}
+				for _, b := range row.GetBadges() {
+					title += " [" + b.GetLabel() + "]"
+				}
+				due := ""
+				if dt := row.GetCells()[4].GetDatetime(); dt != nil {
+					due = humanDue(dt, now)
+				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-					prefix[it.GetId()],
+					prefix[row.GetItemId()],
 					title,
-					it.GetTodo().GetProject(),
-					strings.Join(it.GetTodo().GetLabels(), ","),
-					humanDue(it.GetTodo().GetDue(), now),
+					row.GetCells()[2].GetText(),
+					row.GetCells()[3].GetText(),
+					due,
 				)
 			}
 			return w.Flush()
