@@ -5,14 +5,17 @@ import { endOfDay } from "./lib/format";
 import { completeTask } from "./lib/actions";
 import { buildAPI, registry, uiBridge, useRegistry } from "./lib/extensions";
 import type { CommandContext } from "./lib/commands";
+import { savedViews, type SavedView } from "./lib/savedviews";
 import { Sidebar } from "./components/Sidebar";
 import { TaskList, visibleTasks } from "./components/TaskList";
 import { CompletedList } from "./components/CompletedList";
 import { NewTaskOverlay, type NewTaskInitial } from "./components/NewTaskOverlay";
 import { DetailPanel } from "./components/DetailPanel";
+import { BoardView } from "./components/BoardView";
 import { ToastStack } from "./components/ToastStack";
 import { CommandPalette } from "./components/CommandPalette";
 import { ExtensionBoundary } from "./components/ExtensionBoundary";
+import { ShortcutsHelp } from "./components/ShortcutsHelp";
 import { BulkBar } from "./components/BulkBar";
 import { completeMany } from "./lib/actions";
 
@@ -27,11 +30,15 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [sort, setSort] = useState<SortMode>("smart");
+  const [board, setBoard] = useState(false);
+  const [groupBy, setGroupBy] = useState<"priority" | "project">("priority");
   const [adding, setAdding] = useState<NewTaskInitial | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastClicked, setLastClicked] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const regVersion = useRegistry();
 
   // Which registered panels are open. Seeded from each panel's defaultOpen
@@ -115,6 +122,19 @@ export default function App() {
   const clearSelection = () => setSelected(new Set());
   // Selection is scoped to a view; leaving it clears the set.
   useEffect(clearSelection, [view.kind, (view as { label?: string }).label, (view as { source?: string }).source]);
+
+  const applySaved = (v: SavedView) => {
+    setOpenId(null);
+    navigate(v.view);
+    setSort(v.sort);
+    setBoard(v.board);
+    setGroupBy(v.groupBy);
+    setSearch(v.search);
+  };
+  const saveCurrentView = () => {
+    const name = window.prompt("Save this view as:");
+    if (name?.trim()) savedViews.add({ name: name.trim(), view, sort, board, groupBy, search });
+  };
   const openTask = openId !== null ? snap.tasks.get(openId) : undefined;
   const extView = view.kind === "ext" ? registry.viewById(view.id) : undefined;
   const api = useMemo(() => buildAPI(store), [store]);
@@ -153,11 +173,13 @@ export default function App() {
       togglePanel,
       openTask: openTaskById,
       openAdd,
+      saveCurrentView,
       extCommands: registry.commands,
       now,
     }),
     // regVersion covers extension command/panel registration; view/now/sel change often.
-    [snap, store, selectedId, view, now, regVersion, sort, dark],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [snap, store, selectedId, view, now, regVersion, sort, board, groupBy, search, dark],
   );
 
   // Keyboard: list navigation stays out of the way of typing.
@@ -168,7 +190,20 @@ export default function App() {
         setPaletteOpen((o) => !o);
         return;
       }
-      if (adding || paletteOpen) return; // those overlays own keys while open
+      // Modal overlays own the keyboard while open; Escape always closes them
+      // (even if focus has left their card).
+      if (helpOpen) {
+        if (e.key === "Escape") setHelpOpen(false);
+        return;
+      }
+      if (adding) {
+        if (e.key === "Escape") setAdding(null);
+        return;
+      }
+      if (paletteOpen) {
+        if (e.key === "Escape") setPaletteOpen(false);
+        return;
+      }
       const el = e.target as HTMLElement;
       const typing = el.tagName === "INPUT" || el.tagName === "TEXTAREA";
       if (e.key === "Escape" && !typing) {
@@ -204,6 +239,11 @@ export default function App() {
           if (registry.panels.length > 0) togglePanel(registry.panels[0].id);
           return;
         }
+        case "?": {
+          e.preventDefault();
+          setHelpOpen(true);
+          return;
+        }
         case "j":
         case "k": {
           if (tasks.length === 0) return;
@@ -226,6 +266,14 @@ export default function App() {
           if (t) completeTask(store, t);
           return;
         }
+        case "e": {
+          const t = tasks.find((t) => t.id === selectedId);
+          if (t && t.source === "") {
+            e.preventDefault();
+            setEditingId(t.id);
+          }
+          return;
+        }
         case "Enter": {
           if (selectedId !== null) setOpenId(selectedId);
           return;
@@ -234,17 +282,19 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tasks, selectedId, openId, store, adding, paletteOpen, view, now, selected, selectedTasks]);
+  }, [tasks, selectedId, openId, store, adding, paletteOpen, helpOpen, view, now, selected, selectedTasks]);
 
   const showSort = view.kind !== "completed" && view.kind !== "ext";
+  const firstRun = snap.connected && snap.tasks.size === 0;
 
   return (
     <div className="flex h-full flex-col">
-      <div className="relative flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1">
         <Sidebar
           view={view}
           onNavigate={(v) => (setOpenId(null), navigate(v))}
           onAddTask={openAdd}
+          onApplySaved={applySaved}
           dark={dark}
           onToggleTheme={toggleTheme}
         />
@@ -266,7 +316,7 @@ export default function App() {
                   className="w-28 rounded border border-line bg-surface px-2 py-0.5 text-[12px] text-ink placeholder:text-faint focus:w-40 focus:outline-none"
                 />
               )}
-              {showSort && (
+              {showSort && !board && (
                 <label className="flex items-center gap-1 font-mono text-[11px] text-faint">
                   <span className="hidden sm:inline">sort</span>
                   <select
@@ -281,6 +331,28 @@ export default function App() {
                     ))}
                   </select>
                 </label>
+              )}
+              {showSort && board && (
+                <label className="flex items-center gap-1 font-mono text-[11px] text-faint">
+                  <span className="hidden sm:inline">group</span>
+                  <select
+                    value={groupBy}
+                    onChange={(e) => setGroupBy(e.target.value as "priority" | "project")}
+                    className="cursor-pointer rounded border border-line bg-surface px-1 py-0.5 text-[11px] text-ink focus:outline-none"
+                  >
+                    <option value="priority">Priority</option>
+                    <option value="project">Project</option>
+                  </select>
+                </label>
+              )}
+              {showSort && (
+                <button
+                  onClick={() => setBoard((b) => !b)}
+                  title={board ? "List view" : "Board view"}
+                  className="rounded border border-line px-1.5 py-0.5 font-mono text-[11px] text-mute hover:text-ink"
+                >
+                  {board ? "list" : "board"}
+                </button>
               )}
               {registry.panels.map((p) => (
                 <button
@@ -298,7 +370,7 @@ export default function App() {
             </div>
           </header>
 
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className={`min-h-0 flex-1 ${board && showSort ? "overflow-hidden" : "overflow-y-auto"}`}>
             {view.kind === "ext" ? (
               extView ? (
                 <ExtensionBoundary name={extView.id}>
@@ -311,6 +383,33 @@ export default function App() {
               )
             ) : view.kind === "completed" ? (
               <CompletedList />
+            ) : firstRun ? (
+              <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+                <div className="font-mono text-[15px] text-accent">taskd_</div>
+                <p className="mt-2 max-w-xs text-[13px] text-mute">
+                  No tasks yet. Add your first one — everything else (labels, projects, the
+                  calendar, extensions) grows from there.
+                </p>
+                <button
+                  onClick={openAdd}
+                  className="mt-4 rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-white"
+                >
+                  + Add your first task
+                </button>
+                <p className="mt-3 font-mono text-[11px] text-faint">
+                  or press <kbd className="rounded border border-line px-1">q</kbd> ·{" "}
+                  <kbd className="rounded border border-line px-1">?</kbd> for shortcuts
+                </p>
+              </div>
+            ) : board ? (
+              <BoardView
+                tasks={tasks}
+                groupBy={groupBy}
+                now={now}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                onOpen={openTaskById}
+              />
             ) : (
               <TaskList
                 tasks={tasks}
@@ -319,9 +418,19 @@ export default function App() {
                 sort={sort}
                 selectedId={selectedId}
                 bulkSelected={selected}
+                editingId={editingId}
                 onSelect={setSelectedId}
                 onActivate={activateRow}
                 onManualReorder={() => setSort("manual")}
+                onStartEdit={setEditingId}
+                onRename={(id, title) => {
+                  const t = snap.tasks.get(id);
+                  const clean = title.trim();
+                  if (t && clean && clean !== t.title) {
+                    void store.update(id, { title: clean, expectedRevision: t.revision }).catch(() => {});
+                  }
+                }}
+                onEndEdit={() => setEditingId(null)}
               />
             )}
           </div>
@@ -335,11 +444,9 @@ export default function App() {
           </div>
         ))}
 
-        {openTask && (
-          <div className="absolute inset-y-0 right-0 z-20 shadow-2xl">
-            <DetailPanel task={openTask} onClose={() => setOpenId(null)} />
-          </div>
-        )}
+        {/* The detail "peek" is its own column — it pushes the layout rather
+            than overlapping the calendar panel. */}
+        {openTask && <DetailPanel task={openTask} onClose={() => setOpenId(null)} />}
       </div>
 
       {selectedTasks.length > 0 && (
@@ -357,12 +464,13 @@ export default function App() {
           {snap.connected ? "live" : "reconnecting…"}
         </span>
         <button onClick={() => setPaletteOpen(true)} className="hidden hover:text-ink sm:block">
-          ⌘K commands · q add · j/k move · x done
+          ⌘K commands · q add · j/k move · x done · ? help
         </button>
       </footer>
 
       {adding && <NewTaskOverlay now={now} initial={adding} onClose={() => setAdding(null)} />}
       {paletteOpen && <CommandPalette ctx={cmdCtx} onClose={() => setPaletteOpen(false)} />}
+      {helpOpen && <ShortcutsHelp onClose={() => setHelpOpen(false)} />}
       <ToastStack />
     </div>
   );

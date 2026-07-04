@@ -5,12 +5,6 @@ under **Current slate** are what we're building next; the rest is the backlog.
 
 ## UI/UX backlog
 
-Medium:
-- [ ] Inline title edit (double-click / `e`)
-- [ ] Board (kanban) view — a second shape of the same data
-- [ ] Saved/named views (pin filter+sort combos to the sidebar)
-- [ ] Shortcuts cheat sheet (`?`) + real first-run / empty states
-
 Longer-term (need core/proto changes):
 - [ ] Sub-tasks / hierarchy (`parent_id`)
 - [ ] Recurring tasks (recurrence rule)
@@ -21,7 +15,7 @@ Longer-term (need core/proto changes):
 
 - [x] Skeleton validated: left sidebar · center · right dock · slim bottom bar · overlays
 - [x] ⌘K affordance in the bottom bar
-- [ ] Right-region dock cleanup: detail "peek" and the calendar panel coexist without overlapping
+- [x] Right-region dock cleanup: detail "peek" and the calendar panel coexist without overlapping
 
 ## Developer & extension experience
 
@@ -47,3 +41,4 @@ Longer-term (need core/proto changes):
 - [x] Multi-select + bulk actions
 - [x] Drag task → sidebar project/label to reassign
 - [x] Extension `registerCommand` / `registerQuickAddToken` / `getTasks`; error boundary; re-exported `Task`
+- [x] Detail-peek dock (coexists with calendar), inline title edit, board view, saved views, shortcuts cheat sheet, first-run

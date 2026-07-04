@@ -22,9 +22,13 @@ export function TaskRow({
   bulkSelected,
   pulsing,
   checked,
+  editing,
   onToggle,
   onActivate,
   onSelect,
+  onStartEdit,
+  onRename,
+  onEndEdit,
 }: {
   task: Task;
   now: Date;
@@ -35,9 +39,14 @@ export function TaskRow({
   pulsing: boolean;
   /** Optimistic strike-through while the completion round-trips. */
   checked: boolean;
+  /** Title is being edited inline. */
+  editing: boolean;
   onToggle: () => void;
   onActivate: (mods: { meta: boolean; shift: boolean }) => void;
   onSelect: () => void;
+  onStartEdit: () => void;
+  onRename: (title: string) => void;
+  onEndEdit: () => void;
 }) {
   const store = useStore();
   const due = tsDate(task.dueTime);
@@ -85,11 +94,39 @@ export function TaskRow({
         </svg>
       </button>
 
-      <span className={`min-w-0 flex-1 truncate text-[13.5px] ${checked ? "text-mute line-through" : ""}`}>
-        {meta.icon && <span className="mr-1.5">{meta.icon}</span>}
-        {task.title}
-        {meta.subtitle && <span className="ml-2 font-mono text-[11px] text-faint">{meta.subtitle}</span>}
-      </span>
+      {editing ? (
+        <input
+          autoFocus
+          defaultValue={task.title}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") e.currentTarget.blur();
+            else if (e.key === "Escape") {
+              e.currentTarget.value = task.title; // discard, blur won't rename
+              onEndEdit();
+            }
+          }}
+          onBlur={(e) => {
+            onRename(e.currentTarget.value);
+            onEndEdit();
+          }}
+          className="min-w-0 flex-1 border-b border-accent bg-transparent text-[13.5px] focus:outline-none"
+        />
+      ) : (
+        <span
+          onDoubleClick={(e) => {
+            if (synced) return;
+            e.stopPropagation();
+            onStartEdit();
+          }}
+          className={`min-w-0 flex-1 truncate text-[13.5px] ${checked ? "text-mute line-through" : ""}`}
+        >
+          {meta.icon && <span className="mr-1.5">{meta.icon}</span>}
+          {task.title}
+          {meta.subtitle && <span className="ml-2 font-mono text-[11px] text-faint">{meta.subtitle}</span>}
+        </span>
+      )}
 
       {/* Hover action cluster (replaces the chips while hovering). */}
       <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">

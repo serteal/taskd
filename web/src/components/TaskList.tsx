@@ -80,9 +80,13 @@ export function TaskList({
   sort,
   selectedId,
   bulkSelected,
+  editingId,
   onSelect,
   onActivate,
   onManualReorder,
+  onStartEdit,
+  onRename,
+  onEndEdit,
 }: {
   tasks: Task[];
   view: View;
@@ -90,10 +94,14 @@ export function TaskList({
   sort: SortMode;
   selectedId: string | null;
   bulkSelected: Set<string>;
+  editingId: string | null;
   onSelect: (id: string) => void;
   onActivate: (id: string, mods: { meta: boolean; shift: boolean }) => void;
   /** Called after a reorder that happened while not already in manual sort. */
   onManualReorder: () => void;
+  onStartEdit: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onEndEdit: () => void;
 }) {
   const store = useStore();
   const snap = useSnapshot();
@@ -157,9 +165,13 @@ export function TaskList({
       bulkSelected={bulkSelected.has(t.id)}
       pulsing={snap.pulses.has(t.id)}
       checked={leaving.has(t.id)}
+      editing={t.id === editingId}
       onToggle={() => complete(t)}
       onActivate={(mods) => onActivate(t.id, mods)}
       onSelect={() => onSelect(t.id)}
+      onStartEdit={() => onStartEdit(t.id)}
+      onRename={(title) => onRename(t.id, title)}
+      onEndEdit={onEndEdit}
     />
   );
 

@@ -30,6 +30,7 @@ export interface CommandContext {
   togglePanel: (id: string) => void;
   openTask: (id: string) => void;
   openAdd: () => void;
+  saveCurrentView: () => void;
   extCommands: Command[];
   now: Date;
 }
@@ -41,6 +42,7 @@ export function buildStaticCommands(ctx: CommandContext): PaletteCommand[] {
 
   // Global
   out.push({ id: "new-task", title: "New task", group: "Actions", icon: "+", keywords: "add create", run: ctx.openAdd });
+  out.push({ id: "save-view", title: "Save current view…", group: "Actions", icon: "★", keywords: "pin bookmark filter", run: ctx.saveCurrentView });
   out.push({ id: "theme", title: "Toggle theme", group: "Actions", icon: "◐", keywords: "dark light", run: ctx.toggleTheme });
   for (const p of ctx.panels) {
     out.push({

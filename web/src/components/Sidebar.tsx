@@ -6,6 +6,7 @@ import { registry, useRegistry } from "../lib/extensions";
 import { addLabel, setProject } from "../lib/actions";
 import { notify } from "../lib/notify";
 import { readTaskId } from "../lib/dnd";
+import { savedViews, useSavedViews, type SavedView } from "../lib/savedviews";
 
 // Everything below the fixed views is computed from the live replica —
 // projects are the "project:" labels in use, sources are whatever syncers
@@ -14,18 +15,21 @@ export function Sidebar({
   view,
   onNavigate,
   onAddTask,
+  onApplySaved,
   dark,
   onToggleTheme,
 }: {
   view: View;
   onNavigate: (v: View) => void;
   onAddTask: () => void;
+  onApplySaved: (v: SavedView) => void;
   dark: boolean;
   onToggleTheme: () => void;
 }) {
   const snap = useSnapshot();
   const store = useStore();
   const now = useNow();
+  const saved = useSavedViews();
   useRegistry(); // re-render as extensions register views
   const tasks = [...snap.tasks.values()];
 
@@ -102,6 +106,28 @@ export function Sidebar({
             />
           ))}
         </ul>
+
+        {saved.length > 0 && (
+          <SideSection title="views">
+            {saved.map((v) => (
+              <li key={v.id} className="group/sv flex items-center">
+                <button
+                  onClick={() => onApplySaved(v)}
+                  className="flex-1 truncate px-3 py-[5px] text-left text-[13px] text-ink hover:bg-ink/[.04] dark:hover:bg-ink/[.07]"
+                >
+                  {v.name}
+                </button>
+                <button
+                  onClick={() => savedViews.remove(v.id)}
+                  aria-label={`Remove view ${v.name}`}
+                  className="invisible px-2 text-mute hover:text-warn group-hover/sv:visible"
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </SideSection>
+        )}
 
         {projects.length > 0 && (
           <SideSection title="projects">
