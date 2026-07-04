@@ -1,0 +1,5 @@
+{
+  "name": "github",
+  "syncer": ["./task-sync-github"],
+  "web": true
+}

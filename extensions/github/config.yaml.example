@@ -1,0 +1,16 @@
+# Copy to config.yaml next to the binary and edit. The daemon runs the syncer
+# with this folder as the working directory, so config.yaml is read from here.
+#
+# This extension is a MOCK: it fabricates issues and PRs locally and never
+# touches the real GitHub API, so config is entirely optional — a missing
+# config.yaml is fine and the defaults below are used.
+
+# How often to regenerate the mock snapshot (Go duration). Optional; default 15m.
+interval: 15m
+
+# Repositories the fabricated issues/PRs are spread across. Optional; default
+# is the three below. A real version would list the repos to fetch from GitHub.
+repos:
+  - taskd/core
+  - taskd/web
+  - acme/infra

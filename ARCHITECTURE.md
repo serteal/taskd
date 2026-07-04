@@ -17,39 +17,40 @@ proto/task/task.proto     The entire public API, fully commented. Read this firs
 gen/task/                 Generated Go (protoc-gen-go + protoc-gen-connect-go).
 internal/store/           SQLite: schema, filters→SQL, keyset pagination, upsert.
 internal/server/          TaskService handlers + the watch fan-out hub.
-internal/daemon/          Assembly: config, listeners, syncer startup.
-internal/syncer/          Syncer loop + built-in syncers (ics).
+internal/extension/       Extension host: supervise syncers, serve web bundles.
+internal/daemon/          Assembly: config, listeners, extension startup.
 internal/webui/           go:embed of the built web bundle (webui build tag).
 pkg/client/               Dials a taskd; the one place target resolution lives.
+pkg/syncer/               Public Go SDK for writing integrations (syncers).
 cmd/taskd/                The daemon.
 cmd/task/                 The CLI.
 cmd/task-mcp/             MCP server for agents.
 web/                      The web frontend: React + TypeScript + connect-es.
+web/extension-api/        The TS contract extensions' frontend halves build against.
+extensions/               In-tree extensions (ics, gcal, github) — see below.
 ```
 
-Dependency direction: `cmd/* → pkg/client → gen/task` and
-`cmd/taskd → internal/daemon → internal/{server,store,syncer}`. Nothing
+Dependency direction: `cmd/* → pkg/{client,syncer} → gen/task` and
+`cmd/taskd → internal/daemon → internal/{server,store,extension}`. Nothing
 outside `internal/store` touches SQL; nothing outside `internal/server`
-touches the store; syncers and all binaries speak only the public API.
+touches the store; extensions and all binaries speak only the public API.
 
 ## Runtime
 
 `taskd` listens on `127.0.0.1:7517` (config `listen:`) and optionally a
 0600 unix socket (config `socket:`). One h2c port serves the Connect,
-gRPC, and gRPC-Web protocols simultaneously, plus `GET /healthz`. Data
-lives in `$TASKD_DIR` (default `~/.taskd`): `tasks.db` and `config.yaml`.
+gRPC, and gRPC-Web protocols simultaneously, plus `GET /healthz` and the
+extension routes under `/ext/`. Data lives in `$TASKD_DIR` (default
+`~/.taskd`): `tasks.db`, `config.yaml`, and `extensions/`.
 
 ```yaml
 # ~/.taskd/config.yaml — everything optional
 listen: 127.0.0.1:7517
 socket: /Users/me/.taskd/taskd.sock
-syncers:
-  - type: ics
-    name: work            # task source becomes "ics:work"
-    url: https://example.com/cal.ics
-    interval: 15m
-    labels: [calendar]
 ```
+
+Integrations are NOT configured here — they are extensions (folders under
+`~/.taskd/extensions/`, see below).
 
 Clients resolve the daemon address from `TASKD_ADDR`
 (`http://host:port` or `unix:///path`), defaulting to
@@ -121,28 +122,73 @@ freeze):
    at; handle `ABORTED` by refetch-and-retry or asking the user.
 4. Recover watch streams by refetching, not by resuming.
 
-## Writing a syncer
+## Extensions
+
+Extensions add integrations and UI **without changing the core**. They live
+outside the main codebase — a folder the daemon discovers — and cannot do
+anything a third-party program couldn't: the daemon's only involvement is
+supervising an extension's syncer process and serving its web bundle. There
+is no plugin protocol, no schema registration, no capability negotiation.
+
+An extension is a folder in `~/.taskd/extensions/<name>/`:
+
+```
+manifest.json    {"name": "<name>", "syncer": ["./binary", "args…"], "web": true}
+<binary>         daemon half: a syncer process (any language). Optional.
+web/main.js      frontend half: an ESM bundle the app loads. Optional.
+config.yaml      the extension's own config — the daemon never reads it.
+```
+
+On start the daemon (`internal/extension`) scans the folder, supervises each
+`syncer` process (restarting with backoff, injecting `TASKD_ADDR`, prefixing
+its logs `ext <name>:`), and serves each `web/` folder at `/ext/<name>/`
+plus a manifest list at `/ext/index.json`. **Only `web/` is served** — a
+syncer's binary, source, and config stay private. In-tree examples:
+`extensions/{ics,gcal,github}` (ics real; gcal/github mock data for now).
+
+### The daemon half — writing a syncer
 
 A syncer mirrors an external system into tasks. It is an ordinary API
-client — the built-in ones run inside the daemon only for convenience and
-use zero private hooks. The loop:
+client; `pkg/syncer` is the Go SDK (`Client`, `Run`, and `WatchChanges` for
+write-back), but the contract is just one RPC, so any language works. The
+loop:
 
 1. Fetch your source's state (a calendar, your review queue, a tracker).
 2. Convert each item to an `ExternalTask{external_ref, title, due_time,
    completed_time, external_data}`.
 3. `UpsertExternalTasks(source, batch, apply_labels, full_snapshot)`.
 
-That's the whole contract. The server handles create/update/unchanged
-detection and — with `full_snapshot` — pruning of items that vanished from
-the source. Field ownership does the rest: your batch owns
-title/due/completed/external_data; the user's labels and notes survive
-every sync. Put anything you want frontends to *display* in
-`external_data`; lift anything you want users to *filter on* into a label
-via `apply_labels` (or per-task refs → separate sources).
+The server handles create/update/unchanged detection and — with
+`full_snapshot` — pruning of items that vanished from the source. Field
+ownership does the rest: your batch owns title/due/completed/external_data;
+the user's labels, notes, and `user_data` survive every sync. Put anything
+you want frontends to *display* in `external_data`; lift anything you want
+users to *filter on* into a label via `apply_labels`.
 
-Built-in syncers implement `internal/syncer.Syncer` and register in
-`builders`; out-of-process syncers just link `pkg/client` (or any gRPC
-stack in any language) and run on their own schedule.
+### The frontend half — writing a web extension
+
+The web app loads each extension's `web/main.js` at startup and calls its
+`register(api)`. The contract is `web/extension-api/index.d.ts`; the api
+lets an extension:
+
+- `registerPresenter({ match, rowMeta?, DetailSection? })` — customize how
+  its tasks render (row icon/subtitle/time/chips, and a detail-panel
+  section) without owning the whole row, so the list stays consistent.
+- `registerView({ id, title, Component })` — contribute a whole screen with
+  a sidebar entry and a URL (`?ext=<id>`), e.g. the calendar week view.
+- read the live task replica (`hooks.useTasks()`), mutate optimistically
+  (`store.update` etc.), and open the host detail panel (`ui.openTask`).
+
+Bundles are built with esbuild, sharing the host's React via shims
+(`web/extension-api/react-shim.js`), so hooks work across the boundary; see
+`extensions/build-web.mjs`. Extensions style with inline styles and the
+host's theme CSS variables (`--ink`, `--accent`, …) — Tailwind classes are
+not part of the contract.
+
+Extensions coexist because they namespace what they own: a syncer's tasks by
+`source`, a presenter by its `match`, and structured extension data by
+top-level key in `external_data` (source-owned) or `user_data`
+(user/client-owned — e.g. the calendar view's `user_data.timebox`).
 
 ## Storage
 
@@ -151,7 +197,7 @@ milliseconds; proto timestamps are truncated to ms on write.
 
 ```
 tasks(id PK, title, notes, due_ms?, completed_ms?, source, external_ref,
-      external_data JSON, revision, created_ms, updated_ms)
+      external_data JSON, user_data JSON, revision, created_ms, updated_ms)
 task_labels(task_id → tasks ON DELETE CASCADE, label; PK(task_id, label))
 ```
 
@@ -166,8 +212,9 @@ mismatch. `OFFSET` does not appear in the codebase.
 
 See DESIGN.md §9. The load-bearing ones for contributors: revision bumps by
 exactly 1 per write; only upserts write source-owned fields and only user
-RPCs write labels/notes; `full_snapshot` pruning cannot touch local tasks;
-the store never interprets `external_data`; watch events carry full state.
+RPCs write labels/notes/`user_data`; `full_snapshot` pruning cannot touch
+local tasks; the store never interprets `external_data` or `user_data`;
+watch events carry full state.
 
 ## Development
 

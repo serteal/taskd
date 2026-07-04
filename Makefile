@@ -25,8 +25,12 @@ build:
 	go build -o task ./cmd/task
 	go build -o task-mcp ./cmd/task-mcp
 
-extensions: ## build the in-tree reference extensions' syncer binaries
+extensions: ## build the in-tree extensions (syncer binaries + web bundles)
 	go build -o extensions/ics/task-sync-ics ./extensions/ics
+	go build -o extensions/gcal/task-sync-gcal ./extensions/gcal
+	go build -o extensions/github/task-sync-github ./extensions/github
+	node extensions/build-web.mjs extensions/gcal
+	node extensions/build-web.mjs extensions/github
 
 web: ## build the web UI bundle into internal/webui/dist
 	cd web && npm install && npm run build

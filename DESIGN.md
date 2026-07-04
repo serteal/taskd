@@ -32,17 +32,21 @@ a one-sentence replacement:
 
 | Was | Is |
 |---|---|
-| Plugin protocol (manifests, descriptor sets, schema gates) | **The public API is the plugin API.** A syncer is just a client. |
+| Plugin protocol (manifests, descriptor sets, schema gates) | **The public API is the extension API.** An extension's syncer is just a client; the daemon supervises the process and serves its UI bundle, nothing more (§5a). |
 | Two-layer Item (Mirror + Todo, dual revisions) | One `Task` + a field-ownership convention (§5). |
-| Kinds, facets, virtual fields, typed extension schemas | Labels, plus a display-only `external_data` blob. |
+| Kinds, facets, virtual fields, typed extension schemas | Labels, plus opaque `external_data` / `user_data` blobs the extension owns. |
 | CEL filters + SQL pushdown + residual evaluation | A structured `TaskFilter` message; every dimension is indexable. |
 | Rules engine | Doesn't exist. A "rule" is a small client watching for changes, if ever needed. |
 | Intents + durable outbox + idempotency keys | Doesn't exist. Syncing is one-way per field, so there is nothing to write back (§5). |
 | Event log, cursors, retention, resync protocol | A dumb live stream: reconnect ⇒ refetch (§6). |
-| Server-side rendering of UI contributions | Frontends render. |
+| Server-side rendering of UI contributions | Frontends render; extensions ship JS bundles loaded at runtime (§5a). |
 
 The guiding rule (rule of three): an abstraction is added when the second
-or third *concrete* consumer shows up, not speculatively.
+or third *concrete* consumer shows up, not speculatively. The extension
+system itself earned its place this way — the calendar and bug integrations
+were the concrete second and third consumers that a plain "syncer is a
+client" note couldn't serve (they needed real UI), so the mechanism grew to
+exactly fit them and no further.
 
 ## 3. API stance: unversioned, frozen-when-stable
 
@@ -74,7 +78,8 @@ Task {
   completed_time?,     // unset = active; set = done
   source,              // "" = local; else the syncer that owns it
   external_ref,        // the task's identity in the source system
-  external_data,       // Struct; source detail, display-only
+  external_data,       // Struct; source-owned detail, display-only
+  user_data,           // Struct; user/client-owned extension data
   revision,            // optimistic concurrency + watch ordering
   create_time, update_time
 }
@@ -88,9 +93,13 @@ Decisions:
   strings. New classification schemes cost nothing.
 - **Completion is a timestamp, not a bool** — free "completed this week"
   queries, and unset naturally means active.
-- **`external_data` is opaque.** The server stores and returns it, never
-  interprets it. If a filter dimension is ever needed on external detail,
-  the syncer's job is to *lift it into a label* (e.g. `pr:approved`).
+- **Two opaque extension blobs, split by owner.** `external_data` is
+  source-owned (a syncer writes it every sync); `user_data` is
+  user/client-owned (sync never touches it). Both are stored and returned
+  verbatim, never interpreted or filtered on by the server; extensions
+  namespace their keys (`user_data.timebox`, `user_data.gcal`, …) so they
+  coexist without a registry. If a filter dimension is ever needed on
+  external detail, the syncer *lifts it into a label* (e.g. `pr:approved`).
 - **No task hierarchy, no recurrence in the schema.** Sub-tasks, recurring
   tasks, and reminders are real features, but each is an additive field or
   RPC later — none justifies pre-building now.
@@ -105,8 +114,8 @@ Per synced task, ownership is split by *field*, one writer each:
 
 - the **source** owns `title`, `due_time`, `completed_time`,
   `external_data` — every upsert overwrites them;
-- the **user** owns `labels` and `notes` — upserts never touch them
-  (`apply_labels` only ever adds).
+- the **user** owns `labels`, `notes`, and `user_data` — upserts never
+  touch them (`apply_labels` only ever adds).
 
 Because no field has two writers, there is no conflict engine, no mirror
 layer, and no write-back path. Completing a synced task locally is allowed
@@ -116,10 +125,38 @@ fields. A syncer that wants local completion to close the remote PR can
 watch for it and call the remote API itself; that logic belongs in the
 syncer, not the core.
 
-Syncers run as goroutines inside the daemon (configured in `config.yaml`)
-purely for operational convenience — one process to manage. They talk to
-the daemon through the same public API as any external program, so moving
-one out-of-process is copy-paste, not a redesign.
+## 5a. Extensions: the daemon stays dumb
+
+Integrations and their UI are **extensions** — folders under
+`~/.taskd/extensions/`, outside the main codebase, that users can install
+without touching (or rebuilding) the core. An extension has up to two
+halves: a *syncer* process (the daemon-half) and a *web bundle* (the
+frontend-half). The daemon's entire involvement is mechanical: supervise the
+syncer process (with `TASKD_ADDR` injected) and serve the `web/` folder at
+`/ext/<name>/`. It never learns what an extension means — no plugin
+protocol, no schema registration, no typed capabilities. This is the lesson
+from the discarded platform design (§2): make the core dumb about
+extensions and push the intelligence to the edges, where it can live
+out-of-tree.
+
+Two consequences make this safe and open-ended:
+
+- **A syncer has no privileged access.** It reaches the daemon only through
+  the public API — exactly what any third-party program could do. The
+  in-tree `extensions/ics` is both the shipped calendar integration and the
+  template to copy. (This is why config-file syncers were removed and ICS
+  moved out of core: if the extension path isn't good enough for our own
+  integration, it isn't good enough.)
+- **The frontend half gets real code, not config.** A calendar view with
+  drag-to-timebox can't be declarative. Extensions ship JS bundles loaded at
+  runtime against a small typed API (`web/extension-api`) — presenters that
+  customize how their tasks render, and whole contributed views — sharing
+  the host's React instance. `user_data` is the store behind
+  client-authored structured data like the timebox.
+
+Installing an extension is installing software (arbitrary code, both
+halves) — the right trade for personal tooling, and the same one Obsidian or
+a shell's plugins make. Sandboxing would cost more than the whole system.
 
 ## 6. Live updates: refetch, don't replay
 
@@ -163,11 +200,13 @@ if it ever feels slow.
 2. `(source, external_ref)` is unique among synced tasks; local tasks have
    both empty.
 3. Only `UpsertExternalTasks` creates or rewrites source-owned fields of
-   synced tasks; only user RPCs touch `labels`/`notes`.
+   synced tasks; only user RPCs touch `labels`/`notes`/`user_data`.
 4. `full_snapshot` pruning deletes only rows of the named source; local
    tasks are untouchable by syncers.
 5. Labels returned by the API are always trimmed, deduplicated, and
    sorted; matching is exact and case-sensitive.
-6. The store never interprets `external_data`.
+6. The store never interprets `external_data` or `user_data`.
 7. Watch events carry the full new state (or the deleted id) — a client
    never needs history to converge.
+8. The daemon serves only each extension's `web/` folder; syncer binaries,
+   sources, and configs are never exposed over HTTP.

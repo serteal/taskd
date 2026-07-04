@@ -35,21 +35,29 @@ Agents connect through MCP:
 ./task-mcp       # stdio MCP server; tools: list/create/update/complete tasks
 ```
 
-Calendars (and other sources) sync in via the daemon's `~/.taskd/config.yaml`:
+## Extensions
 
-```yaml
-syncers:
-  - type: ics
-    name: work                       # tasks arrive with source "ics:work"
-    url: https://example.com/cal.ics
-    interval: 15m
-    labels: [calendar]
+External systems — calendars, GitHub issues, anything task-like — sync in
+through **extensions**: folders in `~/.taskd/extensions/<name>/` that the
+daemon discovers. An extension has up to two halves, both optional:
+
+- a **syncer** (any-language binary) that mirrors a source into tasks via
+  the public `UpsertExternalTasks` RPC — it's an ordinary API client, not a
+  plugin with special access;
+- a **web bundle** the app loads at runtime to present those tasks (row
+  badges, a detail section) or add a whole view (e.g. a calendar).
+
+The daemon supervises the syncer and serves the bundle; it never learns what
+an extension *means*. Nothing in the core changes to add one — you drop in a
+folder. In-tree examples: `extensions/ics` (calendar feeds, real),
+`extensions/gcal` (calendar + a drag-to-timebox week view, mock data),
+`extensions/github` (issues/PRs with GitHub-flavored rows, mock data). See
+[ARCHITECTURE.md](ARCHITECTURE.md) and each extension's README.
+
+```sh
+make extensions                    # build in-tree syncers + web bundles
+cp -r extensions/gcal ~/.taskd/extensions/    # (with a built binary + config)
 ```
-
-A syncer is not a plugin — it is an ordinary API client that calls
-`UpsertExternalTasks`. Anything the built-in ICS syncer can do, an external
-program in any language can do identically. That is the entire
-extensibility model.
 
 ## Layout
 
@@ -58,20 +66,24 @@ proto/task/task.proto  the public API — one service, fully commented; read thi
 gen/                   generated Go (committed; `make generate` to refresh)
 internal/store/        SQLite: filters→SQL, keyset pagination, sync upsert
 internal/server/       TaskService handlers + watch fan-out
-internal/daemon/       assembly: config, listeners, syncers
-internal/syncer/       sync loop + built-in syncers (ics)
+internal/extension/    extension host: supervise syncers, serve web bundles
+internal/daemon/       assembly: config, listeners, extension startup
 internal/webui/        go:embed of the built web bundle (webui build tag)
 pkg/client/            dialing helper every Go client uses
+pkg/syncer/            public Go SDK for writing syncers
 web/                   web frontend (React + TS + connect-es, Tailwind)
+web/extension-api/     the TS contract extensions build their frontend against
+extensions/            in-tree extensions (ics, gcal, github)
 cmd/taskd, cmd/task, cmd/task-mcp
 ```
 
 ## Development
 
 ```sh
-make lint       # buf lint + gofmt + go vet
-make test       # go test -race ./...
-make generate   # after proto changes (needs buf, protoc-gen-go, protoc-gen-connect-go)
+make lint         # buf lint + gofmt + go vet
+make test         # go test -race ./...
+make generate     # after proto changes (needs buf, protoc-gen-go, protoc-gen-connect-go)
+make extensions   # build in-tree extension syncers + web bundles
 ```
 
 Conventions that matter:
@@ -80,7 +92,7 @@ Conventions that matter:
   freely until it settles, then freezes and only grows additively
   (DESIGN.md §3).
 - **Field ownership replaces sync machinery.** On synced tasks the source
-  owns `title/due/completed/external_data`; the user owns `labels/notes`.
-  No code may cross that line (DESIGN.md §5).
-- **Only the store touches SQL; everything else speaks the API.** Syncers
-  included.
+  owns `title/due/completed/external_data`; the user owns
+  `labels/notes/user_data`. No code may cross that line (DESIGN.md §5).
+- **Only the store touches SQL; everything else speaks the API.** Extensions
+  included — a syncer has no more access than any other client.

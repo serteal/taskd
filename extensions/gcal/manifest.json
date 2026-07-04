@@ -1,0 +1,5 @@
+{
+  "name": "gcal",
+  "syncer": ["./task-sync-gcal"],
+  "web": true
+}

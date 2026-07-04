@@ -1,0 +1,21 @@
+# Copy to config.yaml next to the binary and edit. The daemon runs the
+# syncer with this folder as the working directory, so config.yaml is read
+# from here.
+#
+# NOTE: gcal is a MOCK. It fabricates a week of calendar events and needs no
+# real configuration, so config.yaml is entirely OPTIONAL — with no file at
+# all it runs a single account named "personal" labelled "calendar". This
+# example only exists to show the shape a real syncer would use.
+
+# How often to re-generate each account's week (Go duration). Optional;
+# default 15m.
+interval: 15m
+
+accounts:
+  # The task source becomes "gcal:<name>".
+  - name: personal
+    # Labels added to every event this account imports (never removed).
+    labels: [calendar]
+
+  # - name: work
+  #   labels: [calendar, work]

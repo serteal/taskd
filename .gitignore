@@ -8,7 +8,9 @@ dist/
 web/node_modules/
 web/tsconfig.tsbuildinfo
 internal/webui/dist/
-# Built extension binaries and real (possibly secret-bearing) configs; the
-# .example files are committed.
+# Built extension artifacts and real (possibly secret-bearing) configs; the
+# .example files and web-src/ sources are committed.
 extensions/*/task-sync-*
 extensions/*/config.yaml
+extensions/*/web/main.js
+extensions/*/web/main.js.map
