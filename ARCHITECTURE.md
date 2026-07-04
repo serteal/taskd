@@ -182,7 +182,8 @@ lets an extension:
   entries and new-task token handlers.
 - read the live task replica (`hooks.useTasks()` / `getTasks()`), mutate
   optimistically (`store.update` etc.), raise toasts / browser notifications
-  (`notify`), and open the host detail panel (`ui.openTask`).
+  (`notify`), draw core SVG icons (`icon("calendar")`) or inline your own,
+  and open the host detail panel (`ui.openTask`).
 
 Core task rows are **drag sources**; a panel accepts a dropped task by
 handling `onDrop` and reading the id with `api.dnd.readTaskId(dataTransfer)`.

@@ -2,11 +2,11 @@
 
 A small task backend with many frontends. One Go daemon owns a SQLite store
 and serves one Connect/gRPC API; the CLI, the MCP server (for agents), the
-future web UI and TUI, and every integration are all just clients of that
-API. Tasks are classified by **labels** (priorities and projects are label
-conventions, not schema) and an optional **due date**; external task-like
-things — calendar events, PRs, tickets — sync in as tasks with a `source`
-and display-only `external_data`.
+web app, and every integration are all just clients of that API (a TUI is
+still to come). Tasks are classified by **labels** (priorities and projects
+are label conventions, not schema) and an optional **due date**; external
+task-like things — calendar events, PRs, tickets — sync in as tasks with a
+`source` and display-only `external_data`.
 
 See [DESIGN.md](DESIGN.md) for the rationale and
 [ARCHITECTURE.md](ARCHITECTURE.md) for the map of what exists.
@@ -25,9 +25,13 @@ open http://127.0.0.1:7517   # the web app — same port as the API
 
 The web app is a live replica: change a task from the CLI, a syncer, or
 another window and it appears in the browser instantly (rows that changed
-from outside pulse once). Keyboard-first: `/` add, `j/k` move, `x` done,
-`⏎` details. (`make build` skips the UI and Node entirely; taskd then
-serves the API plus a pointer page.)
+from outside pulse once). It's a Todoist/Linear-flavored app —
+list and board views, a quick-add overlay, a ⌘K command palette + search,
+multi-select and bulk actions, undo, drag-to-timebox onto a day-timeline
+rail, saved views, and a hand-authored SVG icon set — and keyboard-first
+(`q` add, `⌘K` commands, `j/k` move, `x` done, `?` for the full list).
+(`make build` skips the UI and Node entirely; taskd then serves the API
+plus a pointer page.)
 
 Agents connect through MCP:
 
