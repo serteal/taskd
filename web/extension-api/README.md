@@ -82,3 +82,10 @@ const ext: TaskdExtension = {
 };
 export default ext;
 ```
+
+## Testing
+
+Test your extension against a real `taskd` with the shared kit — Playwright
+e2e (`defineExtensionE2E`) and vitest units (`mockApi` / `makeTask`). See
+[`../testkit/README.md`](../testkit/README.md); in-tree examples live in
+`extensions/{gcal,github}/e2e` and `.../web-src/*.test.ts`.

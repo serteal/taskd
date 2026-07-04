@@ -25,7 +25,10 @@ export function BulkBar({
   const btn = "rounded px-2 py-0.5 text-[12.5px] text-ink hover:bg-ink/[.06] dark:hover:bg-ink/[.1]";
 
   return (
-    <div className="flex items-center gap-1.5 border-t border-line bg-surface px-3 py-1.5">
+    <div
+      data-testid="bulk-bar"
+      className="flex items-center gap-1.5 border-t border-line bg-surface px-3 py-1.5"
+    >
       <span className="mr-1 font-mono text-[12px] text-accent">{tasks.length} selected</span>
       <button onClick={() => run(() => completeMany(store, tasks))} className={btn}>
         Complete

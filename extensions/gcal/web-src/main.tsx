@@ -107,6 +107,7 @@ function DayRail({ api }: { api: ExtensionAPI }) {
 
   return (
     <div
+      data-testid="calendar-rail"
       style={{
         display: "flex",
         flexDirection: "column",
@@ -282,6 +283,7 @@ function NavButton({ label, title, onClick }: { label: string; title: string; on
     <button
       onClick={onClick}
       title={title}
+      aria-label={title}
       style={{
         flexShrink: 0,
         width: 22,

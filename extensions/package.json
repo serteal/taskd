@@ -1,0 +1,4 @@
+{
+  "type": "module",
+  "//": "Marks extension e2e specs (extensions/*/e2e) as ESM so they share the test kit's module format. Does not affect the Go syncers or the esbuild-built web bundles."
+}

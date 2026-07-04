@@ -1,0 +1,6 @@
+{
+  "name": "@taskd/testkit",
+  "private": true,
+  "type": "module",
+  "description": "Shared Playwright + vitest utilities for testing the taskd web app and its extensions."
+}

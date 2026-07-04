@@ -8,6 +8,11 @@ dist/
 web/node_modules/
 web/tsconfig.tsbuildinfo
 internal/webui/dist/
+# Playwright e2e artifacts (match anywhere — runs may drop them at the cwd)
+test-results/
+playwright-report/
+blob-report/
+.last-run.json
 # Built extension artifacts and real (possibly secret-bearing) configs; the
 # .example files and web-src/ sources are committed.
 extensions/*/task-sync-*

@@ -51,7 +51,13 @@ export function EventBlock({
     borderLeft: `3px solid ${isEvent ? "var(--accent)" : "var(--ink)"}`,
   };
   return (
-    <div style={style} onClick={onClick} title={`${title} · ${time}`}>
+    <div
+      style={style}
+      data-testid={isEvent ? "cal-event" : "cal-timebox"}
+      data-title={title}
+      onClick={onClick}
+      title={`${title} · ${time}`}
+    >
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 3 }}>
         <span
           style={{

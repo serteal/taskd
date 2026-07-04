@@ -111,7 +111,12 @@ export function Sidebar({
         {saved.length > 0 && (
           <SideSection title="views">
             {saved.map((v) => (
-              <li key={v.id} className="group/sv flex items-center">
+              <li
+                key={v.id}
+                data-testid="saved-view"
+                data-view-name={v.name}
+                className="group/sv flex items-center"
+              >
                 <button
                   onClick={() => onApplySaved(v)}
                   className="flex-1 truncate px-3 py-[5px] text-left text-[13px] text-ink hover:bg-ink/[.04] dark:hover:bg-ink/[.07]"
@@ -188,7 +193,7 @@ export function Sidebar({
 
 function SideSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="mt-4">
+    <div className="mt-4" data-testid={`sidebar-section-${title}`}>
       <div className="px-3 pb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-faint">
         {title}
       </div>
@@ -218,6 +223,8 @@ function SideItem({
     <li>
       <button
         onClick={onClick}
+        data-testid="side-item"
+        data-label={label}
         onDragOver={
           onDropTask
             ? (e) => {

@@ -86,9 +86,13 @@ cmd/taskd, cmd/task, cmd/task-mcp
 ```sh
 make lint         # buf lint + gofmt + go vet
 make test         # go test -race ./...
+make test-web     # web typecheck + vitest units (incl. extension web-src math)
+make test-web-e2e # Playwright e2e: builds a webui taskd + extensions, spawns one per test
 make generate     # after proto changes (needs buf, protoc-gen-go, protoc-gen-connect-go)
 make extensions   # build in-tree extension syncers + web bundles
 ```
+
+The web UI test plan and layout live in [TESTING.md](TESTING.md).
 
 Conventions that matter:
 

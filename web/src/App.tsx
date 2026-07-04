@@ -454,7 +454,11 @@ export default function App() {
       )}
 
       <footer className="flex items-center justify-between border-t border-line bg-surface px-3 py-1.5 font-mono text-[11px] text-faint">
-        <span className="flex items-center gap-1.5">
+        <span
+          className="flex items-center gap-1.5"
+          data-testid="conn-status"
+          data-connected={snap.connected}
+        >
           <span
             className={`inline-block h-[7px] w-[7px] rounded-full ${
               snap.connected ? "bg-accent" : "bg-warn"

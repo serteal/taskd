@@ -1,7 +1,7 @@
 GOBIN := $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
-.PHONY: generate generate-web lint test test-web build build-web web extensions fmt
+.PHONY: generate generate-web lint test test-web test-web-e2e build build-web web extensions fmt
 
 generate: ## regenerate Go from protos (requires buf, protoc-gen-go, protoc-gen-connect-go)
 	buf generate
@@ -17,8 +17,11 @@ lint:
 test:
 	go test -race ./...
 
-test-web:
+test-web: ## typecheck + unit tests (vitest, incl. extension web-src)
 	cd web && npm run typecheck && npm test
+
+test-web-e2e: ## end-to-end web tests: builds a webui taskd + extensions, spawns one per test
+	cd web && npx playwright install chromium && npx playwright test
 
 build:
 	go build -o taskd ./cmd/taskd

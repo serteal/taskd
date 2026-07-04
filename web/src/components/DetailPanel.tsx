@@ -36,7 +36,10 @@ export function DetailPanel({ task, onClose }: { task: Task; onClose: () => void
   const api = useMemo(() => buildAPI(store), [store]);
 
   return (
-    <div className="flex h-full w-[340px] shrink-0 flex-col border-l border-line bg-surface">
+    <div
+      data-testid="detail-panel"
+      className="flex h-full w-[340px] shrink-0 flex-col border-l border-line bg-surface"
+    >
       <div className="flex items-center justify-between border-b border-line px-3 py-2">
         <span className="font-mono text-[11px] text-faint">{shortId(task.id)}</span>
         <button

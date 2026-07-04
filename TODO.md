@@ -57,3 +57,8 @@ Extension API surface:
 - [x] `registerPresenter` / `registerView` / `registerPanel` / `registerCommand` / `registerQuickAddToken`
 - [x] `api.hooks` / `getTasks` / `store` / `client` / `ui` / `dnd` / `notify` / `icon` / `format`
 - [x] Error boundary around extension surfaces; re-exported generated `Task` type
+
+Testing (see [TESTING.md](TESTING.md)):
+- [x] Playwright e2e against a real per-test `taskd` — every screen + action, both daemon modes; zero-console-error invariant; self-building harness (no stale-bundle class)
+- [x] vitest units for the pure web logic + extension `web-src` math (reorder/commands/views/format/notify/savedviews/gcal-util/github-gh)
+- [x] Reusable test kit (`web/testkit`) — `defineExtensionE2E` + `mockApi`; extensions test their own surfaces (gcal calendar events, github detail) with the same rig

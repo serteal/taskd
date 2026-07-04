@@ -121,10 +121,11 @@ export function BoardView({
   };
 
   return (
-    <div className="flex h-full overflow-x-auto">
+    <div data-testid="board" className="flex h-full overflow-x-auto">
       {columns.map((col) => (
         <div
           key={col.key || "__none__"}
+          data-testid={`board-col-${col.key || "none"}`}
           onDragOver={(e) => {
             e.preventDefault();
             setOverKey(col.key);

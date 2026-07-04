@@ -114,6 +114,8 @@ export function DayColumn({
   return (
     <div
       style={style}
+      data-testid="cal-daycolumn"
+      data-today={isToday}
       onDragOver={(e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
@@ -147,6 +149,7 @@ export function DayColumn({
       {/* Now line (today only) */}
       {showNow && (
         <div
+          data-testid="cal-nowline"
           style={{
             position: "absolute",
             left: 0,

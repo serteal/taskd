@@ -6,6 +6,11 @@ import { useSyncExternalStore } from "react";
 // user-facing and ephemeral routes through here — failed writes, extension
 // errors, undo prompts, and (later) reminders.
 
+// Test mode (?test=1) keeps toasts on screen so the e2e suite can assert their
+// content and click their actions (e.g. Undo) without racing auto-dismiss.
+const NO_AUTODISMISS =
+  typeof location !== "undefined" && new URLSearchParams(location.search).has("test");
+
 export type ToastKind = "info" | "success" | "error";
 
 export interface ToastAction {
@@ -39,7 +44,7 @@ class Notifier {
     const id = this.seq++;
     this.toasts = [...this.toasts, { id, kind: t.kind ?? "info", message: t.message, action: t.action }];
     this.emit();
-    const duration = t.duration ?? (t.action ? 7000 : 4000);
+    const duration = NO_AUTODISMISS ? 0 : t.duration ?? (t.action ? 7000 : 4000);
     if (duration > 0) setTimeout(() => this.dismiss(id), duration);
     return id;
   }
