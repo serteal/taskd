@@ -1,6 +1,7 @@
 import type { JsonObject } from "@bufbuild/protobuf";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { notify } from "./notify";
 import type { Task, WatchTasksResponse } from "../gen/task/task_pb";
 import type { TaskClient } from "./client";
 
@@ -51,8 +52,6 @@ export class TaskStore {
   private connected = false;
   private generation = 0;
   private snap: Snapshot;
-
-  onNotice?: (message: string) => void;
 
   constructor(
     readonly client: TaskClient,
@@ -203,11 +202,11 @@ export class TaskStore {
 
   private notifyError(err: unknown): void {
     const cerr = ConnectError.from(err);
-    this.onNotice?.(
-      cerr.code === Code.Aborted
-        ? "Task changed elsewhere — showing the latest version."
-        : `Couldn't save: ${cerr.rawMessage}`,
-    );
+    if (cerr.code === Code.Aborted) {
+      notify.toast({ kind: "info", message: "Task changed elsewhere — showing the latest version." });
+    } else {
+      notify.error(`Couldn't save: ${cerr.rawMessage}`);
+    }
   }
 
   // --- internals ---------------------------------------------------------

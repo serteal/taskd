@@ -178,8 +178,11 @@ lets an extension:
   a sidebar entry and a URL (`?ext=<id>`).
 - `registerPanel({ id, title, side, width, Component })` — dock a persistent
   panel beside the main view, visible over any view (the calendar day-rail).
-- read the live task replica (`hooks.useTasks()`), mutate optimistically
-  (`store.update` etc.), and open the host detail panel (`ui.openTask`).
+- `registerCommand(...)` / `registerQuickAddToken(...)` — add ⌘K palette
+  entries and new-task token handlers.
+- read the live task replica (`hooks.useTasks()` / `getTasks()`), mutate
+  optimistically (`store.update` etc.), raise toasts / browser notifications
+  (`notify`), and open the host detail panel (`ui.openTask`).
 
 Core task rows are **drag sources**; a panel accepts a dropped task by
 handling `onDrop` and reading the id with `api.dnd.readTaskId(dataTransfer)`.

@@ -12,12 +12,21 @@ export interface ParsedQuickAdd {
   due?: Date;
 }
 
+/** An extension-contributed token handler (registry.quickAddTokens). */
+export interface QuickAddTokenFn {
+  match(token: string): { labels?: string[]; due?: Date } | null;
+}
+
 const PRIORITY = /^p[1-3]$/;
 const RELATIVE_DAYS = /^(\d{1,3})d$/;
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
-export function parseQuickAdd(input: string, now: Date = new Date()): ParsedQuickAdd {
+export function parseQuickAdd(
+  input: string,
+  now: Date = new Date(),
+  tokens: QuickAddTokenFn[] = [],
+): ParsedQuickAdd {
   const words: string[] = [];
   const labels: string[] = [];
   let due: Date | undefined;
@@ -37,7 +46,24 @@ export function parseQuickAdd(input: string, now: Date = new Date()): ParsedQuic
       due = d;
       continue;
     }
-    words.push(tok);
+    // Extension-contributed tokens get a shot before the word becomes title.
+    // A throwing provider is ignored, not fatal to typing.
+    let consumed = false;
+    for (const p of tokens) {
+      let r: { labels?: string[]; due?: Date } | null = null;
+      try {
+        r = p.match(tok);
+      } catch {
+        r = null;
+      }
+      if (r) {
+        if (r.labels) labels.push(...r.labels);
+        if (r.due) due = r.due;
+        consumed = true;
+        break;
+      }
+    }
+    if (!consumed) words.push(tok);
   }
   return { title: words.join(" "), labels: dedupe(labels), due };
 }

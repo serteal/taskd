@@ -1,13 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNow, useSnapshot, useStore, useView } from "./lib/hooks";
+import { useNow, useSnapshot, useStore, useTheme, useView } from "./lib/hooks";
 import { viewTitle, type SortMode, SORT_LABELS } from "./lib/views";
 import { endOfDay } from "./lib/format";
+import { completeTask } from "./lib/actions";
 import { buildAPI, registry, uiBridge, useRegistry } from "./lib/extensions";
+import type { CommandContext } from "./lib/commands";
 import { Sidebar } from "./components/Sidebar";
 import { TaskList, visibleTasks } from "./components/TaskList";
 import { CompletedList } from "./components/CompletedList";
 import { NewTaskOverlay, type NewTaskInitial } from "./components/NewTaskOverlay";
 import { DetailPanel } from "./components/DetailPanel";
+import { ToastStack } from "./components/ToastStack";
+import { CommandPalette } from "./components/CommandPalette";
+import { ExtensionBoundary } from "./components/ExtensionBoundary";
+import { BulkBar } from "./components/BulkBar";
+import { completeMany } from "./lib/actions";
 
 const SORT_MODES: SortMode[] = ["smart", "manual", "created", "title"];
 
@@ -15,12 +22,16 @@ export default function App() {
   const store = useStore();
   const snap = useSnapshot();
   const now = useNow();
+  const [dark, toggleTheme] = useTheme();
   const [view, navigate] = useView();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
   const [sort, setSort] = useState<SortMode>("smart");
   const [adding, setAdding] = useState<NewTaskInitial | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [lastClicked, setLastClicked] = useState<string | null>(null);
   const regVersion = useRegistry();
 
   // Which registered panels are open. Seeded from each panel's defaultOpen
@@ -49,13 +60,6 @@ export default function App() {
     return () => ctl.abort();
   }, [store]);
 
-  useEffect(() => {
-    store.onNotice = (m) => setToast(m);
-    return () => {
-      store.onNotice = undefined;
-    };
-  }, [store]);
-
   // Extensions open the host detail panel through this bridge.
   useEffect(() => {
     uiBridge.openTask = (id) => {
@@ -67,20 +71,59 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (toast === null) return;
-    const t = setTimeout(() => setToast(null), 4000);
-    return () => clearTimeout(t);
-  }, [toast]);
+  const openTaskById = (id: string) => {
+    setSelectedId(id);
+    setOpenId(id);
+  };
 
-  const tasks =
-    view.kind === "completed" || view.kind === "ext"
-      ? []
-      : visibleTasks(snap.tasks.values(), view, now, sort);
+  const all = view.kind === "completed" || view.kind === "ext" ? [] : visibleTasks(snap.tasks.values(), view, now, sort);
+  // Header search narrows the current view client-side (the replica is in memory).
+  const q = search.trim().toLowerCase();
+  const tasks = q ? all.filter((t) => `${t.title} ${t.notes}`.toLowerCase().includes(q)) : all;
+  const selectedTasks = [...selected].map((id) => snap.tasks.get(id)).filter((t): t is NonNullable<typeof t> => !!t);
+
+  // Clicking a row: plain = open detail (clears selection); ⌘/Ctrl = toggle in
+  // the multi-select set; Shift = select the range from the last click.
+  const activateRow = (id: string, mods: { meta: boolean; shift: boolean }) => {
+    setLastClicked(id);
+    if (mods.meta) {
+      setSelected((s) => {
+        const n = new Set(s);
+        n.has(id) ? n.delete(id) : n.add(id);
+        return n;
+      });
+      return;
+    }
+    if (mods.shift && lastClicked) {
+      const ids = tasks.map((t) => t.id);
+      const a = ids.indexOf(lastClicked);
+      const b = ids.indexOf(id);
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        setSelected((s) => {
+          const n = new Set(s);
+          for (let i = lo; i <= hi; i++) n.add(ids[i]);
+          return n;
+        });
+        return;
+      }
+    }
+    setSelected(new Set());
+    openTaskById(id);
+  };
+
+  const clearSelection = () => setSelected(new Set());
+  // Selection is scoped to a view; leaving it clears the set.
+  useEffect(clearSelection, [view.kind, (view as { label?: string }).label, (view as { source?: string }).source]);
   const openTask = openId !== null ? snap.tasks.get(openId) : undefined;
   const extView = view.kind === "ext" ? registry.viewById(view.id) : undefined;
   const api = useMemo(() => buildAPI(store), [store]);
   const panels = registry.panels.filter((p) => openPanels.has(p.id));
+  const labelOptions = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of snap.tasks.values()) for (const l of t.labels) s.add(l);
+    return [...s].sort();
+  }, [snap]);
 
   // The overlay opens scoped to the current view: a project view files there,
   // Today prefills today's date.
@@ -98,18 +141,58 @@ export default function App() {
       return next;
     });
 
+  const cmdCtx = useMemo<CommandContext>(
+    () => ({
+      tasks: [...snap.tasks.values()],
+      store,
+      selectedId,
+      navigate: (v) => (setOpenId(null), navigate(v)),
+      setSort,
+      toggleTheme,
+      panels: registry.panels.map((p) => ({ id: p.id, title: p.title })),
+      togglePanel,
+      openTask: openTaskById,
+      openAdd,
+      extCommands: registry.commands,
+      now,
+    }),
+    // regVersion covers extension command/panel registration; view/now/sel change often.
+    [snap, store, selectedId, view, now, regVersion, sort, dark],
+  );
+
   // Keyboard: list navigation stays out of the way of typing.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+        return;
+      }
+      if (adding || paletteOpen) return; // those overlays own keys while open
       const el = e.target as HTMLElement;
       const typing = el.tagName === "INPUT" || el.tagName === "TEXTAREA";
-      if (adding) return; // the overlay owns keys while open
       if (e.key === "Escape" && !typing) {
+        if (selected.size > 0) {
+          clearSelection();
+          return;
+        }
         setOpenId(null);
         return;
       }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
       switch (e.key) {
+        case " ": {
+          if (selectedId) {
+            e.preventDefault();
+            setLastClicked(selectedId);
+            setSelected((s) => {
+              const n = new Set(s);
+              n.has(selectedId) ? n.delete(selectedId) : n.add(selectedId);
+              return n;
+            });
+          }
+          return;
+        }
         case "q":
         case "c":
         case "/": {
@@ -126,9 +209,7 @@ export default function App() {
           if (tasks.length === 0) return;
           const idx = tasks.findIndex((t) => t.id === selectedId);
           const next =
-            idx === -1
-              ? 0
-              : Math.min(Math.max(idx + (e.key === "j" ? 1 : -1), 0), tasks.length - 1);
+            idx === -1 ? 0 : Math.min(Math.max(idx + (e.key === "j" ? 1 : -1), 0), tasks.length - 1);
           const id = tasks[next].id;
           setSelectedId(id);
           if (openId !== null) setOpenId(id);
@@ -136,8 +217,13 @@ export default function App() {
           return;
         }
         case "x": {
+          if (selected.size > 0) {
+            completeMany(store, selectedTasks);
+            clearSelection();
+            return;
+          }
           const t = tasks.find((t) => t.id === selectedId);
-          if (t) void store.update(t.id, { completed: true, expectedRevision: t.revision }).catch(() => {});
+          if (t) completeTask(store, t);
           return;
         }
         case "Enter": {
@@ -148,7 +234,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tasks, selectedId, openId, store, adding, view, now]);
+  }, [tasks, selectedId, openId, store, adding, paletteOpen, view, now, selected, selectedTasks]);
 
   const showSort = view.kind !== "completed" && view.kind !== "ext";
 
@@ -159,6 +245,8 @@ export default function App() {
           view={view}
           onNavigate={(v) => (setOpenId(null), navigate(v))}
           onAddTask={openAdd}
+          dark={dark}
+          onToggleTheme={toggleTheme}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
@@ -168,6 +256,16 @@ export default function App() {
             </h1>
             {showSort && <span className="font-mono text-[12px] text-faint">{tasks.length}</span>}
             <div className="ml-auto flex items-center gap-2">
+              {showSort && (
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(e) => e.key === "Escape" && setSearch("")}
+                  placeholder="Search…"
+                  aria-label="Search this view"
+                  className="w-28 rounded border border-line bg-surface px-2 py-0.5 text-[12px] text-ink placeholder:text-faint focus:w-40 focus:outline-none"
+                />
+              )}
               {showSort && (
                 <label className="flex items-center gap-1 font-mono text-[11px] text-faint">
                   <span className="hidden sm:inline">sort</span>
@@ -203,7 +301,9 @@ export default function App() {
           <div className="min-h-0 flex-1 overflow-y-auto">
             {view.kind === "ext" ? (
               extView ? (
-                <extView.Component api={api} />
+                <ExtensionBoundary name={extView.id}>
+                  <extView.Component api={api} />
+                </ExtensionBoundary>
               ) : (
                 <div className="px-3 py-16 text-center text-[13px] text-mute">
                   No extension provides the view "{view.id}". Is it installed?
@@ -218,8 +318,9 @@ export default function App() {
                 now={now}
                 sort={sort}
                 selectedId={selectedId}
+                bulkSelected={selected}
                 onSelect={setSelectedId}
-                onOpen={(id) => (setSelectedId(id), setOpenId(id))}
+                onActivate={activateRow}
                 onManualReorder={() => setSort("manual")}
               />
             )}
@@ -228,7 +329,9 @@ export default function App() {
 
         {panels.map((p) => (
           <div key={p.id} className="hidden shrink-0 md:block" style={{ width: p.width ?? 300 }}>
-            <p.Component api={api} />
+            <ExtensionBoundary name={p.id}>
+              <p.Component api={api} />
+            </ExtensionBoundary>
           </div>
         ))}
 
@@ -238,6 +341,10 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {selectedTasks.length > 0 && (
+        <BulkBar tasks={selectedTasks} now={now} labelOptions={labelOptions} onClear={clearSelection} />
+      )}
 
       <footer className="flex items-center justify-between border-t border-line bg-surface px-3 py-1.5 font-mono text-[11px] text-faint">
         <span className="flex items-center gap-1.5">
@@ -249,21 +356,14 @@ export default function App() {
           />
           {snap.connected ? "live" : "reconnecting…"}
         </span>
-        <span className="hidden sm:block">q add · j/k move · x done · ⏎ open · t timeline</span>
+        <button onClick={() => setPaletteOpen(true)} className="hidden hover:text-ink sm:block">
+          ⌘K commands · q add · j/k move · x done
+        </button>
       </footer>
 
-      {adding && (
-        <NewTaskOverlay now={now} initial={adding} onClose={() => setAdding(null)} />
-      )}
-
-      {toast && (
-        <div
-          role="status"
-          className="fixed bottom-10 left-1/2 -translate-x-1/2 rounded border border-line bg-surface px-3 py-1.5 text-[12.5px] shadow-sm"
-        >
-          {toast}
-        </div>
-      )}
+      {adding && <NewTaskOverlay now={now} initial={adding} onClose={() => setAdding(null)} />}
+      {paletteOpen && <CommandPalette ctx={cmdCtx} onClose={() => setPaletteOpen(false)} />}
+      <ToastStack />
     </div>
   );
 }

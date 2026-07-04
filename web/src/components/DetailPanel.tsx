@@ -4,6 +4,7 @@ import { useStore } from "../lib/hooks";
 import { fmtStamp, shortId, toLocalInput, tsDate } from "../lib/format";
 import { buildAPI, registry } from "../lib/extensions";
 import { Chip } from "./Chip";
+import { ExtensionBoundary } from "./ExtensionBoundary";
 
 // Field edits save individually (blur/Enter) with the task's revision as
 // expected_revision; a conflict just means the replica already shows the
@@ -139,9 +140,9 @@ export function DetailPanel({ task, onClose }: { task: Task; onClose: () => void
         </div>
 
         {presenter?.DetailSection && (
-          <div>
+          <ExtensionBoundary name={task.source || "extension"}>
             <presenter.DetailSection task={task} api={api} />
-          </div>
+          </ExtensionBoundary>
         )}
 
         {dataEntries.length > 0 && !presenter?.DetailSection && (

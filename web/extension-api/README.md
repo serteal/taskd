@@ -21,8 +21,16 @@ Inside `register(api)`:
   contribute a *persistent* panel docked beside the main view (visible on
   top of whatever view the user is in). Use it for always-available surfaces
   like a day timeline. A panel is an ordinary drop target — see dnd below.
+- **`api.registerCommand({ id, title, group?, icon?, keywords?, when?, run })`** —
+  add an entry to the ⌘K command palette.
+- **`api.registerQuickAddToken({ match, hint? })`** — interpret a word in the
+  new-task field, e.g. `match: t => t === "noon" ? { due: todayNoon } : null`.
 - **`api.hooks.useTasks()` / `useNow()`** — the live task replica and a slow
   clock, as React hooks, for use in your components.
+- **`api.getTasks()`** — a one-shot snapshot of active tasks for imperative
+  code (a command's `run()`), where a hook can't be used.
+- **`api.notify.toast/error/browser(...)`** — transient toasts (with an
+  optional action button) and native browser notifications.
 - **`api.store.create/update/delete`** — optimistic mutations. To write your
   own structured data, use `user_data` (user-owned, never touched by sync):
   `api.store.update(id, { userData: { ...task.userData, mine: {...} } })`.

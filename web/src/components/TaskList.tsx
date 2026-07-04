@@ -5,6 +5,7 @@ import { dayDiff, tsDate } from "../lib/format";
 import { matchesView, type SortMode, type View } from "../lib/views";
 import { computeReorder, taskOrder } from "../lib/reorder";
 import { readTaskId } from "../lib/dnd";
+import { completeTask } from "../lib/actions";
 import { TaskRow } from "./TaskRow";
 
 // Grouping encodes time pressure, nothing else: Overdue → Today → Tomorrow →
@@ -78,8 +79,9 @@ export function TaskList({
   now,
   sort,
   selectedId,
+  bulkSelected,
   onSelect,
-  onOpen,
+  onActivate,
   onManualReorder,
 }: {
   tasks: Task[];
@@ -87,8 +89,9 @@ export function TaskList({
   now: Date;
   sort: SortMode;
   selectedId: string | null;
+  bulkSelected: Set<string>;
   onSelect: (id: string) => void;
-  onOpen: (id: string) => void;
+  onActivate: (id: string, mods: { meta: boolean; shift: boolean }) => void;
   /** Called after a reorder that happened while not already in manual sort. */
   onManualReorder: () => void;
 }) {
@@ -113,9 +116,7 @@ export function TaskList({
     // Brief strike-through before the row leaves the active set.
     setLeaving((s) => new Set(s).add(t.id));
     setTimeout(() => {
-      store.update(t.id, { completed: true, expectedRevision: t.revision }).catch(() => {
-        /* store resyncs; toast handled globally */
-      });
+      completeTask(store, t); // optimistic + undo toast
       setLeaving((s) => {
         const n = new Set(s);
         n.delete(t.id);
@@ -153,10 +154,11 @@ export function TaskList({
       task={t}
       now={now}
       selected={t.id === selectedId}
+      bulkSelected={bulkSelected.has(t.id)}
       pulsing={snap.pulses.has(t.id)}
       checked={leaving.has(t.id)}
       onToggle={() => complete(t)}
-      onOpen={() => onOpen(t.id)}
+      onActivate={(mods) => onActivate(t.id, mods)}
       onSelect={() => onSelect(t.id)}
     />
   );

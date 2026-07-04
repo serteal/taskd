@@ -315,6 +315,34 @@ const extension: TaskdExtension = {
       defaultOpen: true,
       Component: DayRail,
     });
+
+    // A command in ⌘K: how many calendar events are on today.
+    api.registerCommand({
+      id: "today-events",
+      title: "Calendar: today's events",
+      group: "Calendar",
+      icon: "📅",
+      run: () => {
+        const today = new Date();
+        const n = api.getTasks().filter((t) => {
+          if (!isGcal(t)) return false;
+          const iv = eventInterval(t);
+          return iv !== undefined && sameDay(iv.start, today);
+        }).length;
+        api.notify.toast({ message: `${n} event${n === 1 ? "" : "s"} on your calendar today` });
+      },
+    });
+
+    // A quick-add token: typing "noon" schedules the task for today at 12:00.
+    api.registerQuickAddToken({
+      hint: "noon",
+      match: (tok) => {
+        if (tok.toLowerCase() !== "noon") return null;
+        const d = new Date();
+        d.setHours(12, 0, 0, 0);
+        return { due: d };
+      },
+    });
   },
 };
 

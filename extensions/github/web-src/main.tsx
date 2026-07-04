@@ -33,6 +33,19 @@ const extension: TaskdExtension = {
       },
       DetailSection: IssueDetail,
     });
+
+    // A command in ⌘K: count open issues & PRs across the synced repos.
+    api.registerCommand({
+      id: "open-count",
+      title: "GitHub: count open issues & PRs",
+      group: "GitHub",
+      icon: "🐙",
+      keywords: "pr issues review",
+      run: () => {
+        const open = api.getTasks().filter((t) => t.source === "github" && !t.completedTime).length;
+        api.notify.toast({ message: `${open} open GitHub item${open === 1 ? "" : "s"}` });
+      },
+    });
   },
 };
 

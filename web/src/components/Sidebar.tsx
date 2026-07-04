@@ -1,7 +1,11 @@
-import { useNow, useSnapshot, useTheme } from "../lib/hooks";
+import { useState } from "react";
+import { useNow, useSnapshot, useStore } from "../lib/hooks";
 import { matchesView, sameView, viewTitle, type View } from "../lib/views";
 import { chipParts } from "../lib/format";
 import { registry, useRegistry } from "../lib/extensions";
+import { addLabel, setProject } from "../lib/actions";
+import { notify } from "../lib/notify";
+import { readTaskId } from "../lib/dnd";
 
 // Everything below the fixed views is computed from the live replica —
 // projects are the "project:" labels in use, sources are whatever syncers
@@ -10,16 +14,34 @@ export function Sidebar({
   view,
   onNavigate,
   onAddTask,
+  dark,
+  onToggleTheme,
 }: {
   view: View;
   onNavigate: (v: View) => void;
   onAddTask: () => void;
+  dark: boolean;
+  onToggleTheme: () => void;
 }) {
   const snap = useSnapshot();
+  const store = useStore();
   const now = useNow();
-  const [dark, toggleTheme] = useTheme();
   useRegistry(); // re-render as extensions register views
   const tasks = [...snap.tasks.values()];
+
+  // Drop a dragged task onto a project → move it there; onto a label → add it.
+  const dropOnProject = (project: string) => (taskId: string) => {
+    const t = snap.tasks.get(taskId);
+    if (!t) return;
+    setProject(store, t, project);
+    notify.toast({ message: `Moved to ${chipParts(project).val}` });
+  };
+  const dropOnLabel = (label: string) => (taskId: string) => {
+    const t = snap.tasks.get(taskId);
+    if (!t || t.labels.includes(label)) return;
+    addLabel(store, t, label);
+    notify.toast({ message: `Added ${label}` });
+  };
 
   const count = (v: View) => tasks.filter((t) => matchesView(t, v, now)).length;
 
@@ -90,6 +112,7 @@ export function Sidebar({
                 count={labelCounts.get(l)}
                 active={sameView(view, { kind: "label", label: l })}
                 onClick={() => onNavigate({ kind: "label", label: l })}
+                onDropTask={dropOnProject(l)}
               />
             ))}
           </SideSection>
@@ -104,6 +127,7 @@ export function Sidebar({
                 count={labelCounts.get(l)}
                 active={sameView(view, { kind: "label", label: l })}
                 onClick={() => onNavigate({ kind: "label", label: l })}
+                onDropTask={dropOnLabel(l)}
               />
             ))}
           </SideSection>
@@ -126,7 +150,7 @@ export function Sidebar({
       </nav>
 
       <button
-        onClick={toggleTheme}
+        onClick={onToggleTheme}
         className="border-t border-line px-3 py-2 text-left font-mono text-[11px] text-mute hover:text-ink"
       >
         theme: {dark ? "dusk" : "paper"}
@@ -152,21 +176,46 @@ function SideItem({
   active,
   mono,
   onClick,
+  onDropTask,
 }: {
   label: string;
   count?: number;
   active: boolean;
   mono?: boolean;
   onClick: () => void;
+  /** When set, a dragged task dropped here is passed by id. */
+  onDropTask?: (taskId: string) => void;
 }) {
+  const [dragOver, setDragOver] = useState(false);
   return (
     <li>
       <button
         onClick={onClick}
+        onDragOver={
+          onDropTask
+            ? (e) => {
+                e.preventDefault();
+                if (!dragOver) setDragOver(true);
+              }
+            : undefined
+        }
+        onDragLeave={onDropTask ? () => setDragOver(false) : undefined}
+        onDrop={
+          onDropTask
+            ? (e) => {
+                e.preventDefault();
+                setDragOver(false);
+                const id = readTaskId(e.dataTransfer);
+                if (id) onDropTask(id);
+              }
+            : undefined
+        }
         className={`flex w-full items-center justify-between px-3 py-[5px] text-left text-[13px] ${
-          active
-            ? "bg-accent/10 font-medium text-accent"
-            : "text-ink hover:bg-ink/[.04] dark:hover:bg-ink/[.07]"
+          dragOver
+            ? "bg-accent/20 text-accent ring-1 ring-inset ring-accent/40"
+            : active
+              ? "bg-accent/10 font-medium text-accent"
+              : "text-ink hover:bg-ink/[.04] dark:hover:bg-ink/[.07]"
         } ${mono ? "font-mono text-[12px]" : ""}`}
       >
         <span className="truncate">{label}</span>

@@ -4,6 +4,7 @@ import type { Task } from "../gen/task/task_pb";
 import type { TaskStore, TaskPatch } from "./store";
 import { chipParts, tsDate } from "./format";
 import { TASK_DRAG_MIME, readTaskId } from "./dnd";
+import { extensionNotify } from "./notify";
 
 // The host side of the extension system: a registry the UI reads
 // reactively, the api object handed to each extension's register(), and the
@@ -40,10 +41,32 @@ export interface Panel {
   Component: ComponentType<{ api: unknown }>;
 }
 
+/** A command-palette (⌘K) entry. */
+export interface Command {
+  id: string;
+  title: string;
+  group?: string;
+  icon?: string;
+  /** Optional keywords to widen fuzzy matching beyond the title. */
+  keywords?: string;
+  /** Hidden when this returns false. */
+  when?: () => boolean;
+  run: () => void;
+}
+
+/** A quick-add token handler. Returns what a token contributes, or null. */
+export interface QuickAddToken {
+  match(token: string): { labels?: string[]; due?: Date } | null;
+  /** Shown in help/hints, e.g. "@ctx". */
+  hint?: string;
+}
+
 class ExtensionRegistry {
   presenters: Presenter[] = [];
   views: ExtensionView[] = [];
   panels: Panel[] = [];
+  commands: Command[] = [];
+  quickAddTokens: QuickAddToken[] = [];
   private listeners = new Set<() => void>();
   private version = 0;
 
@@ -112,7 +135,17 @@ export function buildAPI(store: TaskStore) {
       registry.panels.push(p);
       registry.bump();
     },
+    registerCommand: (c: Command) => {
+      registry.commands.push(c);
+      registry.bump();
+    },
+    registerQuickAddToken: (t: QuickAddToken) => {
+      registry.quickAddTokens.push(t);
+      registry.bump();
+    },
     hooks: { useTasks, useNow },
+    /** Non-hook snapshot of active tasks, for imperative code (e.g. commands). */
+    getTasks: (): Task[] => [...store.getSnapshot().tasks.values()],
     store: {
       create: (f: { title: string; notes?: string; labels?: string[]; due?: Date }) => store.create(f),
       update: (id: string, patch: TaskPatch) => store.update(id, patch),
@@ -123,6 +156,8 @@ export function buildAPI(store: TaskStore) {
     // The drag payload contract: an extension panel reads the dragged task's
     // id off a drop event with dnd.readTaskId(e.dataTransfer).
     dnd: { mime: TASK_DRAG_MIME, readTaskId },
+    // Transient toasts + browser notifications.
+    notify: extensionNotify,
     format: { tsDate, chipParts },
   };
 }
@@ -159,6 +194,7 @@ export async function loadExtensions(store: TaskStore): Promise<void> {
       console.info(`taskd: loaded extension ${ext.name ?? url}`);
     } catch (err) {
       console.error(`taskd: extension ${url} failed to load:`, err);
+      extensionNotify.error(`An extension failed to load (${url.split("/").slice(-2, -1)[0] || url}).`);
     }
   }
 }
