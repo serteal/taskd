@@ -1,0 +1,98 @@
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Engineering paper: warm paper + ink in the light theme, terminal dusk in
+   the dark one. Petrol is the single accent; burnt orange is reserved for
+   time pressure (overdue). */
+:root {
+  --bg: #f4f4f1;
+  --surface: #fdfdfc;
+  --ink: #1b1d21;
+  --muted: #6e747e;
+  --faint: #a2a7b0;
+  --line: #e3e3dc;
+  --accent: #0b7a6b;
+  --warn: #c74e22;
+}
+.dark {
+  --bg: #141519;
+  --surface: #1c1e24;
+  --ink: #e7e8ea;
+  --muted: #8a8f98;
+  --faint: #5d6169;
+  --line: #2a2d34;
+  --accent: #3cbfa4;
+  --warn: #e2703f;
+}
+
+@theme inline {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --color-paper: var(--bg);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-mute: var(--muted);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-warn: var(--warn);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* A row that just changed from outside this client (syncer, CLI, another
+   window) announces itself once, then goes quiet. */
+@keyframes pulse-row {
+  from {
+    background-color: color-mix(in srgb, var(--accent) 16%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .pulse {
+    animation: pulse-row 1.8s ease-out both;
+  }
+}
+
+/* The wordmark's cursor. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes caret-blink {
+    0%,
+    55% {
+      opacity: 1;
+    }
+    56%,
+    100% {
+      opacity: 0;
+    }
+  }
+  .caret {
+    animation: caret-blink 1.4s step-end infinite;
+  }
+}

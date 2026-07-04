@@ -21,6 +21,7 @@ import (
 	"todoapp/internal/server"
 	"todoapp/internal/store"
 	"todoapp/internal/syncer"
+	"todoapp/internal/webui"
 	"todoapp/pkg/client"
 )
 
@@ -64,6 +65,8 @@ func Run(ctx context.Context, opts Options) error {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
+	// The web UI (or a pointer to how to build it); longer API patterns win.
+	mux.Handle("/", webui.Handler())
 
 	httpSrv := &http.Server{Handler: h2c.NewHandler(mux, &http2.Server{})}
 	serveErr := make(chan error, 2)

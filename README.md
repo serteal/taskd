@@ -14,13 +14,20 @@ See [DESIGN.md](DESIGN.md) for the rationale and
 ## Quick start
 
 ```sh
-make build       # builds ./taskd, ./task, ./task-mcp
+make build-web   # builds ./taskd (web UI embedded), ./task, ./task-mcp
 ./taskd &        # serves http://127.0.0.1:7517, data in ~/.taskd
+open http://127.0.0.1:7517   # the web app — same port as the API
 ./task add "write the calendar connector" -l dev -l project:taskd --due tomorrow
 ./task ls
 ./task done <id-prefix>
 ./task watch     # live change stream
 ```
+
+The web app is a live replica: change a task from the CLI, a syncer, or
+another window and it appears in the browser instantly (rows that changed
+from outside pulse once). Keyboard-first: `/` add, `j/k` move, `x` done,
+`⏎` details. (`make build` skips the UI and Node entirely; taskd then
+serves the API plus a pointer page.)
 
 Agents connect through MCP:
 
@@ -53,7 +60,9 @@ internal/store/        SQLite: filters→SQL, keyset pagination, sync upsert
 internal/server/       TaskService handlers + watch fan-out
 internal/daemon/       assembly: config, listeners, syncers
 internal/syncer/       sync loop + built-in syncers (ics)
+internal/webui/        go:embed of the built web bundle (webui build tag)
 pkg/client/            dialing helper every Go client uses
+web/                   web frontend (React + TS + connect-es, Tailwind)
 cmd/taskd, cmd/task, cmd/task-mcp
 ```
 

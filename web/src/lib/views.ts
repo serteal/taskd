@@ -1,0 +1,99 @@
+import type { Task } from "../gen/task/task_pb";
+import { dayDiff, tsDate } from "./format";
+
+// A view is a pure filter over the replica (Completed is the exception: it
+// pages the server, since the archive isn't replicated). Views live in the
+// URL so they survive reloads and can be linked.
+//
+// "Inbox" follows the label model, not a schema: it is the active tasks
+// that belong to no project — i.e. carry no "project:" label.
+
+export type View =
+  | { kind: "inbox" }
+  | { kind: "today" }
+  | { kind: "upcoming" }
+  | { kind: "all" }
+  | { kind: "completed" }
+  | { kind: "label"; label: string }
+  | { kind: "source"; source: string };
+
+export function parseView(search: string): View {
+  const p = new URLSearchParams(search);
+  const label = p.get("label");
+  if (label) return { kind: "label", label };
+  const source = p.get("source");
+  if (source) return { kind: "source", source };
+  switch (p.get("view")) {
+    case "today":
+      return { kind: "today" };
+    case "upcoming":
+      return { kind: "upcoming" };
+    case "all":
+      return { kind: "all" };
+    case "completed":
+      return { kind: "completed" };
+    case "inbox":
+      return { kind: "inbox" };
+    default:
+      return { kind: "today" };
+  }
+}
+
+export function viewToSearch(v: View): string {
+  const p = new URLSearchParams();
+  switch (v.kind) {
+    case "label":
+      p.set("label", v.label);
+      break;
+    case "source":
+      p.set("source", v.source);
+      break;
+    default:
+      p.set("view", v.kind);
+  }
+  return `?${p.toString()}`;
+}
+
+export function viewTitle(v: View): string {
+  switch (v.kind) {
+    case "inbox":
+      return "Inbox";
+    case "today":
+      return "Today";
+    case "upcoming":
+      return "Upcoming";
+    case "all":
+      return "All tasks";
+    case "completed":
+      return "Completed";
+    case "label":
+      return v.label;
+    case "source":
+      return v.source;
+  }
+}
+
+export function matchesView(t: Task, v: View, now: Date): boolean {
+  switch (v.kind) {
+    case "all":
+      return true;
+    case "inbox":
+      return !t.labels.some((l) => l.startsWith("project:"));
+    case "today": {
+      const due = tsDate(t.dueTime);
+      return due !== undefined && dayDiff(due, now) <= 0;
+    }
+    case "upcoming":
+      return t.dueTime !== undefined;
+    case "label":
+      return t.labels.includes(v.label);
+    case "source":
+      return t.source === v.source;
+    case "completed":
+      return false; // served by the server, not the replica
+  }
+}
+
+export function sameView(a: View, b: View): boolean {
+  return viewToSearch(a) === viewToSearch(b);
+}
