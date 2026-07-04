@@ -66,6 +66,24 @@ export interface ExtensionView {
   Component: ComponentType<{ api: ExtensionAPI }>;
 }
 
+/**
+ * A persistent panel mounted beside the main view — visible on top of
+ * whatever view the user is in (unlike a full-screen ExtensionView). Use it
+ * for always-available surfaces like a day timeline. A panel is an ordinary
+ * drop target: read a dropped task's id with api.dnd.readTaskId.
+ */
+export interface Panel {
+  id: string;
+  title: string;
+  /** Which edge to dock on. Only "right" is supported today. */
+  side?: "right";
+  /** Panel width in px (default 300). */
+  width?: number;
+  /** Whether it starts open (default true). */
+  defaultOpen?: boolean;
+  Component: ComponentType<{ api: ExtensionAPI }>;
+}
+
 export interface TaskPatch {
   title?: string;
   notes?: string;
@@ -81,6 +99,7 @@ export interface TaskPatch {
 export interface ExtensionAPI {
   registerPresenter(p: Presenter): void;
   registerView(v: ExtensionView): void;
+  registerPanel(p: Panel): void;
 
   /** Live replica of ACTIVE tasks — hooks usable in extension components. */
   hooks: {
@@ -103,6 +122,16 @@ export interface ExtensionAPI {
   ui: {
     /** Opens the host's detail panel for a task. */
     openTask(id: string): void;
+  };
+
+  /**
+   * Drag-and-drop bridge. Core task rows are drag sources; a panel that
+   * wants to accept them handles onDragOver (preventDefault) + onDrop and
+   * reads the task id here. `mime` is the dataTransfer type used.
+   */
+  dnd: {
+    mime: string;
+    readTaskId(dataTransfer: DataTransfer): string | null;
   };
 
   format: {

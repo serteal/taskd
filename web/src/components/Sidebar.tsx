@@ -9,9 +9,11 @@ import { registry, useRegistry } from "../lib/extensions";
 export function Sidebar({
   view,
   onNavigate,
+  onAddTask,
 }: {
   view: View;
   onNavigate: (v: View) => void;
+  onAddTask: () => void;
 }) {
   const snap = useSnapshot();
   const now = useNow();
@@ -43,6 +45,19 @@ export function Sidebar({
     <aside className="flex w-52 shrink-0 flex-col border-r border-line bg-surface">
       <div className="px-3 pb-3 pt-4 font-mono text-[15px] font-medium tracking-tight">
         taskd<span className="caret text-accent">_</span>
+      </div>
+
+      <div className="px-2 pb-2">
+        <button
+          onClick={onAddTask}
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] font-medium text-accent hover:bg-accent/10"
+        >
+          <span className="flex h-[17px] w-[17px] items-center justify-center rounded-full bg-accent text-[13px] leading-none text-white">
+            +
+          </span>
+          Add task
+          <span className="ml-auto font-mono text-[11px] text-faint">q</span>
+        </button>
       </div>
 
       <nav className="min-h-0 flex-1 overflow-y-auto pb-4">

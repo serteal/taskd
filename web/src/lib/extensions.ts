@@ -3,6 +3,7 @@ import { useSyncExternalStore } from "react";
 import type { Task } from "../gen/task/task_pb";
 import type { TaskStore, TaskPatch } from "./store";
 import { chipParts, tsDate } from "./format";
+import { TASK_DRAG_MIME, readTaskId } from "./dnd";
 
 // The host side of the extension system: a registry the UI reads
 // reactively, the api object handed to each extension's register(), and the
@@ -29,9 +30,20 @@ export interface ExtensionView {
   Component: ComponentType<{ api: unknown }>;
 }
 
+/** A persistent panel mounted beside the main view (e.g. a day timeline). */
+export interface Panel {
+  id: string;
+  title: string;
+  side?: "right";
+  width?: number;
+  defaultOpen?: boolean;
+  Component: ComponentType<{ api: unknown }>;
+}
+
 class ExtensionRegistry {
   presenters: Presenter[] = [];
   views: ExtensionView[] = [];
+  panels: Panel[] = [];
   private listeners = new Set<() => void>();
   private version = 0;
 
@@ -96,6 +108,10 @@ export function buildAPI(store: TaskStore) {
       registry.views.push(v);
       registry.bump();
     },
+    registerPanel: (p: Panel) => {
+      registry.panels.push(p);
+      registry.bump();
+    },
     hooks: { useTasks, useNow },
     store: {
       create: (f: { title: string; notes?: string; labels?: string[]; due?: Date }) => store.create(f),
@@ -104,6 +120,9 @@ export function buildAPI(store: TaskStore) {
     },
     client: store.client,
     ui: { openTask: (id: string) => uiBridge.openTask(id) },
+    // The drag payload contract: an extension panel reads the dragged task's
+    // id off a drop event with dnd.readTaskId(e.dataTransfer).
+    dnd: { mime: TASK_DRAG_MIME, readTaskId },
     format: { tsDate, chipParts },
   };
 }

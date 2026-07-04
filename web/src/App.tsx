@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNow, useSnapshot, useStore, useView } from "./lib/hooks";
-import { viewTitle } from "./lib/views";
+import { viewTitle, type SortMode, SORT_LABELS } from "./lib/views";
+import { endOfDay } from "./lib/format";
 import { buildAPI, registry, uiBridge, useRegistry } from "./lib/extensions";
 import { Sidebar } from "./components/Sidebar";
 import { TaskList, visibleTasks } from "./components/TaskList";
 import { CompletedList } from "./components/CompletedList";
-import { QuickAdd } from "./components/QuickAdd";
+import { NewTaskOverlay, type NewTaskInitial } from "./components/NewTaskOverlay";
 import { DetailPanel } from "./components/DetailPanel";
+
+const SORT_MODES: SortMode[] = ["smart", "manual", "created", "title"];
 
 export default function App() {
   const store = useStore();
@@ -16,7 +19,28 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const quickAddRef = useRef<HTMLInputElement>(null);
+  const [sort, setSort] = useState<SortMode>("smart");
+  const [adding, setAdding] = useState<NewTaskInitial | null>(null);
+  const regVersion = useRegistry();
+
+  // Which registered panels are open. Seeded from each panel's defaultOpen
+  // the first time it appears; the user's toggle wins thereafter.
+  const [openPanels, setOpenPanels] = useState<Set<string>>(new Set());
+  const seenPanels = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    setOpenPanels((cur) => {
+      let next = cur;
+      for (const p of registry.panels) {
+        if (seenPanels.current.has(p.id)) continue;
+        seenPanels.current.add(p.id);
+        if (p.defaultOpen ?? true) {
+          if (next === cur) next = new Set(cur);
+          next.add(p.id);
+        }
+      }
+      return next;
+    });
+  }, [regVersion]);
 
   // The replica loop lives exactly as long as the app.
   useEffect(() => {
@@ -42,7 +66,6 @@ export default function App() {
       uiBridge.openTask = () => {};
     };
   }, []);
-  useRegistry(); // re-render when extensions register
 
   useEffect(() => {
     if (toast === null) return;
@@ -53,25 +76,49 @@ export default function App() {
   const tasks =
     view.kind === "completed" || view.kind === "ext"
       ? []
-      : visibleTasks(snap.tasks.values(), view, now);
+      : visibleTasks(snap.tasks.values(), view, now, sort);
   const openTask = openId !== null ? snap.tasks.get(openId) : undefined;
   const extView = view.kind === "ext" ? registry.viewById(view.id) : undefined;
   const api = useMemo(() => buildAPI(store), [store]);
+  const panels = registry.panels.filter((p) => openPanels.has(p.id));
+
+  // The overlay opens scoped to the current view: a project view files there,
+  // Today prefills today's date.
+  const openAdd = () => {
+    const initial: NewTaskInitial = {};
+    if (view.kind === "label" && view.label.startsWith("project:")) initial.project = view.label;
+    if (view.kind === "today") initial.due = endOfDay(now);
+    setAdding(initial);
+  };
+
+  const togglePanel = (id: string) =>
+    setOpenPanels((cur) => {
+      const next = new Set(cur);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
 
   // Keyboard: list navigation stays out of the way of typing.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
       const typing = el.tagName === "INPUT" || el.tagName === "TEXTAREA";
+      if (adding) return; // the overlay owns keys while open
       if (e.key === "Escape" && !typing) {
         setOpenId(null);
         return;
       }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
       switch (e.key) {
+        case "q":
+        case "c":
         case "/": {
           e.preventDefault();
-          quickAddRef.current?.focus();
+          openAdd();
+          return;
+        }
+        case "t": {
+          if (registry.panels.length > 0) togglePanel(registry.panels[0].id);
           return;
         }
         case "j":
@@ -85,18 +132,12 @@ export default function App() {
           const id = tasks[next].id;
           setSelectedId(id);
           if (openId !== null) setOpenId(id);
-          document
-            .querySelector(`[data-task-row="${id}"]`)
-            ?.scrollIntoView({ block: "nearest" });
+          document.querySelector(`[data-task-row="${id}"]`)?.scrollIntoView({ block: "nearest" });
           return;
         }
         case "x": {
           const t = tasks.find((t) => t.id === selectedId);
-          if (t) {
-            void store
-              .update(t.id, { completed: true, expectedRevision: t.revision })
-              .catch(() => {});
-          }
+          if (t) void store.update(t.id, { completed: true, expectedRevision: t.revision }).catch(() => {});
           return;
         }
         case "Enter": {
@@ -107,26 +148,57 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tasks, selectedId, openId, store]);
+  }, [tasks, selectedId, openId, store, adding, view, now]);
+
+  const showSort = view.kind !== "completed" && view.kind !== "ext";
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex min-h-0 flex-1">
-        <Sidebar view={view} onNavigate={(v) => (setOpenId(null), navigate(v))} />
+      <div className="relative flex min-h-0 flex-1">
+        <Sidebar
+          view={view}
+          onNavigate={(v) => (setOpenId(null), navigate(v))}
+          onAddTask={openAdd}
+        />
 
         <main className="flex min-w-0 flex-1 flex-col">
-          <header className="flex items-baseline gap-2.5 px-3 pb-2 pt-4">
+          <header className="flex items-center gap-2.5 px-3 pb-2 pt-4">
             <h1 className="text-[19px] font-semibold tracking-tight">
               {extView ? extView.title : viewTitle(view)}
             </h1>
-            {view.kind !== "completed" && view.kind !== "ext" && (
-              <span className="font-mono text-[12px] text-faint">{tasks.length}</span>
-            )}
+            {showSort && <span className="font-mono text-[12px] text-faint">{tasks.length}</span>}
+            <div className="ml-auto flex items-center gap-2">
+              {showSort && (
+                <label className="flex items-center gap-1 font-mono text-[11px] text-faint">
+                  <span className="hidden sm:inline">sort</span>
+                  <select
+                    value={sort}
+                    onChange={(e) => setSort(e.target.value as SortMode)}
+                    className="cursor-pointer rounded border border-line bg-surface px-1 py-0.5 text-[11px] text-ink focus:outline-none"
+                  >
+                    {SORT_MODES.map((m) => (
+                      <option key={m} value={m}>
+                        {SORT_LABELS[m]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {registry.panels.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => togglePanel(p.id)}
+                  className={`rounded border px-1.5 py-0.5 font-mono text-[11px] ${
+                    openPanels.has(p.id)
+                      ? "border-accent/50 text-accent"
+                      : "border-line text-mute hover:text-ink"
+                  }`}
+                >
+                  {p.title}
+                </button>
+              ))}
+            </div>
           </header>
-
-          {view.kind !== "completed" && view.kind !== "ext" && (
-            <QuickAdd ref={quickAddRef} view={view} now={now} />
-          )}
 
           <div className="min-h-0 flex-1 overflow-y-auto">
             {view.kind === "ext" ? (
@@ -144,6 +216,7 @@ export default function App() {
                 tasks={tasks}
                 view={view}
                 now={now}
+                sort={sort}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 onOpen={(id) => (setSelectedId(id), setOpenId(id))}
@@ -152,7 +225,17 @@ export default function App() {
           </div>
         </main>
 
-        {openTask && <DetailPanel task={openTask} onClose={() => setOpenId(null)} />}
+        {panels.map((p) => (
+          <div key={p.id} className="hidden shrink-0 md:block" style={{ width: p.width ?? 300 }}>
+            <p.Component api={api} />
+          </div>
+        ))}
+
+        {openTask && (
+          <div className="absolute inset-y-0 right-0 z-20 shadow-2xl">
+            <DetailPanel task={openTask} onClose={() => setOpenId(null)} />
+          </div>
+        )}
       </div>
 
       <footer className="flex items-center justify-between border-t border-line bg-surface px-3 py-1.5 font-mono text-[11px] text-faint">
@@ -165,10 +248,12 @@ export default function App() {
           />
           {snap.connected ? "live" : "reconnecting…"}
         </span>
-        <span className="hidden sm:block">
-          j/k move · x done · ⏎ open · esc close · / add
-        </span>
+        <span className="hidden sm:block">q add · j/k move · x done · ⏎ open · t timeline</span>
       </footer>
+
+      {adding && (
+        <NewTaskOverlay now={now} initial={adding} onClose={() => setAdding(null)} />
+      )}
 
       {toast && (
         <div

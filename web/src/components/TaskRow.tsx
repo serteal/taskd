@@ -1,6 +1,7 @@
 import type { Task } from "../gen/task/task_pb";
 import { humanDue, tsDate } from "../lib/format";
 import { registry } from "../lib/extensions";
+import { setTaskDrag } from "../lib/dnd";
 import { Chip } from "./Chip";
 
 const toneClass: Record<string, string> = {
@@ -37,12 +38,21 @@ export function TaskRow({
   return (
     <div
       data-task-row={task.id}
+      draggable
+      onDragStart={(e) => setTaskDrag(e.dataTransfer, task.id)}
       onMouseEnter={onSelect}
       onClick={onOpen}
       className={`group flex cursor-pointer items-center gap-2.5 border-b border-line/70 px-3 py-[7px] ${
         selected ? "bg-ink/[.045] dark:bg-ink/[.07]" : ""
       } ${pulsing ? "pulse" : ""}`}
     >
+      <span
+        aria-hidden
+        className="-ml-1.5 w-2 shrink-0 cursor-grab select-none text-center font-mono text-[11px] leading-none text-transparent group-hover:text-faint"
+        title="Drag to timebox or reorder"
+      >
+        ⠿
+      </span>
       <button
         aria-label={checked ? `Reopen ${task.title}` : `Complete ${task.title}`}
         onClick={(e) => {

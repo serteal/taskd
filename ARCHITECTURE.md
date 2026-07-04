@@ -175,9 +175,18 @@ lets an extension:
   its tasks render (row icon/subtitle/time/chips, and a detail-panel
   section) without owning the whole row, so the list stays consistent.
 - `registerView({ id, title, Component })` — contribute a whole screen with
-  a sidebar entry and a URL (`?ext=<id>`), e.g. the calendar week view.
+  a sidebar entry and a URL (`?ext=<id>`).
+- `registerPanel({ id, title, side, width, Component })` — dock a persistent
+  panel beside the main view, visible over any view (the calendar day-rail).
 - read the live task replica (`hooks.useTasks()`), mutate optimistically
   (`store.update` etc.), and open the host detail panel (`ui.openTask`).
+
+Core task rows are **drag sources**; a panel accepts a dropped task by
+handling `onDrop` and reading the id with `api.dnd.readTaskId(dataTransfer)`.
+The calendar rail uses this to timebox a task dropped from any view into
+`user_data.timebox` — dragging is a core capability (it also drives
+manual reordering), so extensions consume the shared drag payload rather
+than wiring up their own.
 
 Bundles are built with esbuild, sharing the host's React via shims
 (`web/extension-api/react-shim.js`), so hooks work across the boundary; see

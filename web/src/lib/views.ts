@@ -107,3 +107,14 @@ export function matchesView(t: Task, v: View, now: Date): boolean {
 export function sameView(a: View, b: View): boolean {
   return viewToSearch(a) === viewToSearch(b);
 }
+
+// How a list is ordered. "smart" is the default (soonest due, then newest);
+// "manual" enables drag-to-reorder against user_data.order.
+export type SortMode = "smart" | "manual" | "created" | "title";
+
+export const SORT_LABELS: Record<SortMode, string> = {
+  smart: "Smart",
+  manual: "Manual",
+  created: "Created",
+  title: "Title",
+};

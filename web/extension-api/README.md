@@ -17,12 +17,21 @@ Inside `register(api)`:
 - **`api.registerView({ id, title, Component })`** — contribute a whole
   screen. It gets a sidebar entry and the URL `?ext=<id>`; `Component`
   receives `{ api }`.
+- **`api.registerPanel({ id, title, side, width, defaultOpen, Component })`** —
+  contribute a *persistent* panel docked beside the main view (visible on
+  top of whatever view the user is in). Use it for always-available surfaces
+  like a day timeline. A panel is an ordinary drop target — see dnd below.
 - **`api.hooks.useTasks()` / `useNow()`** — the live task replica and a slow
   clock, as React hooks, for use in your components.
 - **`api.store.create/update/delete`** — optimistic mutations. To write your
   own structured data, use `user_data` (user-owned, never touched by sync):
   `api.store.update(id, { userData: { ...task.userData, mine: {...} } })`.
 - **`api.ui.openTask(id)`** — open the host detail panel.
+- **`api.dnd`** — drag bridge. Core task rows are drag sources; a panel that
+  accepts them handles `onDragOver` (`preventDefault`) + `onDrop` and reads
+  the dragged task's id with `api.dnd.readTaskId(e.dataTransfer)`. The
+  calendar panel uses this to timebox a dropped task
+  (`user_data.timebox = { start, end }`).
 - **`api.format.tsDate/chipParts`** — the same helpers the core UI uses.
 
 ## Building a bundle
