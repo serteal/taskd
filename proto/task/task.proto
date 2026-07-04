@@ -1,0 +1,237 @@
+syntax = "proto3";
+
+// Package task is the complete public API of taskd — one service, one core
+// message. Everything talks to the daemon through this contract: the CLI,
+// the TUI, the web frontend, the MCP server, and every integration
+// ("syncer"). There is no separate plugin API; a program that syncs external
+// systems into tasks is just another client of this service.
+//
+// VERSIONING: there is deliberately no version suffix on this package. The
+// API is meant to be frozen once it settles. Until then it may change
+// freely; after the freeze it evolves only additively — new fields, new
+// RPCs, new filter dimensions — which proto3 clients ignore when unknown.
+// Nothing is ever renamed, renumbered, or removed.
+package task;
+
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "todoapp/gen/task";
+
+service TaskService {
+  // Creates a local task. The server assigns id, revision, and timestamps.
+  // External (synced) tasks are never created here — see UpsertExternalTasks.
+  rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
+
+  rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
+
+  // Updates the fields named by update_mask, reading new values from task.
+  // Maskable paths: "title", "notes", "labels", "due_time", "completed_time".
+  // Masking a path whose value is unset clears it (unset due_time removes
+  // the due date; unset completed_time re-opens the task). Completing a task
+  // IS setting completed_time — there is no separate RPC.
+  rpc UpdateTask(UpdateTaskRequest) returns (UpdateTaskResponse);
+
+  // Permanently deletes a task, local or external.
+  rpc DeleteTask(DeleteTaskRequest) returns (DeleteTaskResponse);
+
+  // Lists tasks matching a structured filter, newest-created first by
+  // default. Pagination is keyset-based: pass next_page_token back verbatim.
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+
+  // The syncer entry point: reconciles one source's external tasks in a
+  // single batch, keyed by (source, external_ref). Per task the SOURCE owns
+  // title, due_time, completed_time, and external_data — the batch
+  // overwrites them. The USER owns labels and notes — upserts never touch
+  // them (apply_labels only adds). This one-way field ownership is the
+  // entire sync model; there is no conflict resolution because no field has
+  // two writers.
+  rpc UpsertExternalTasks(UpsertExternalTasksRequest) returns (UpsertExternalTasksResponse);
+
+  // Streams every task change from the moment the stream opens — no
+  // history, no cursors. The first message is an empty handshake (see
+  // WatchTasksResponse). To build a consistent live view: open WatchTasks,
+  // await the handshake, then ListTasks, then apply events, using revision
+  // to discard events older than the snapshot (apply an update only if its
+  // task.revision is greater than the local copy's). If the stream drops,
+  // reconnect and refetch; the server may also drop slow consumers.
+  rpc WatchTasks(WatchTasksRequest) returns (stream WatchTasksResponse);
+
+  // Distinct labels in use with task counts, for filter chips and
+  // autocompletion.
+  rpc ListLabels(ListLabelsRequest) returns (ListLabelsResponse);
+}
+
+// Task is the one domain object. Classification is labels plus an optional
+// due date: priorities, projects, and contexts are all label conventions
+// (e.g. "p1", "project:home", "agent:claude"), not schema. Anything
+// task-like from an external system (a PR, a calendar event, a ticket) is a
+// Task with source/external_ref set and its source-specific detail carried
+// verbatim in external_data for display.
+message Task {
+  string id = 1;
+  string title = 2;
+  // Free-form user notes. User-owned even on synced tasks.
+  string notes = 3;
+  // Flat, deduplicated, order-insignificant. The server trims whitespace and
+  // rejects empty labels; matching is exact and case-sensitive.
+  repeated string labels = 4;
+  google.protobuf.Timestamp due_time = 5;
+  // Unset means active. Set means done, at that time.
+  google.protobuf.Timestamp completed_time = 6;
+  // "" for tasks created through CreateTask; a syncer name (e.g. "github",
+  // "ics:work") for synced tasks.
+  string source = 7;
+  // The task's identity in the source system — an id or URL. Unique per
+  // source. Empty iff source is empty.
+  string external_ref = 8;
+  // Source-specific detail (PR author, event location, …), display-only:
+  // the server stores and returns it but never interprets or filters on it.
+  google.protobuf.Struct external_data = 9;
+  // Increments on every write. Optimistic concurrency for writers; ordering
+  // for watchers.
+  uint64 revision = 10;
+  google.protobuf.Timestamp create_time = 11;
+  google.protobuf.Timestamp update_time = 12;
+}
+
+// TaskFilter is structured on purpose — every dimension maps to an index,
+// and frontends render dimensions as UI without parsing a query language.
+// All set dimensions must match (AND). An empty filter matches everything.
+message TaskFilter {
+  // Task has at least one of these labels.
+  repeated string labels_any = 1;
+  // Task has all of these labels.
+  repeated string labels_all = 2;
+  // Unset: both. True: only completed. False: only active.
+  optional bool completed = 3;
+  // Half-open range: matches due_after <= due_time < due_before. Either
+  // bound may be set alone. Tasks without a due date never match a bound.
+  google.protobuf.Timestamp due_before = 4;
+  google.protobuf.Timestamp due_after = 5;
+  // Unset: both. True: only tasks with a due date. False: only without.
+  optional bool has_due = 6;
+  // Exact source match; "" is not a filter (unset means any source).
+  optional string source = 7;
+  // Case-insensitive substring match over title and notes.
+  string text = 8;
+}
+
+message CreateTaskRequest {
+  string title = 1;
+  string notes = 2;
+  repeated string labels = 3;
+  google.protobuf.Timestamp due_time = 4;
+}
+
+message CreateTaskResponse {
+  Task task = 1;
+}
+
+message GetTaskRequest {
+  string id = 1;
+}
+
+message GetTaskResponse {
+  Task task = 1;
+}
+
+message UpdateTaskRequest {
+  string id = 1;
+  google.protobuf.FieldMask update_mask = 2;
+  // Carries the new values for masked paths; everything else is ignored.
+  Task task = 3;
+  // When nonzero, the write fails with ABORTED if the task's current
+  // revision differs. Zero means last-write-wins.
+  uint64 expected_revision = 4;
+}
+
+message UpdateTaskResponse {
+  Task task = 1;
+}
+
+message DeleteTaskRequest {
+  string id = 1;
+}
+
+message DeleteTaskResponse {}
+
+message ListTasksRequest {
+  TaskFilter filter = 1;
+  // One of "created", "updated", "due", "title", optionally followed by
+  // " asc" or " desc". Defaults to "created desc". Ties break by id, so
+  // ordering is total and pagination is stable. With "due", tasks without a
+  // due date sort last.
+  string order_by = 2;
+  // Defaults to 100, capped at 1000.
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListTasksResponse {
+  repeated Task tasks = 1;
+  // Empty when this is the last page.
+  string next_page_token = 2;
+}
+
+message ExternalTask {
+  // Required, unique within the batch.
+  string external_ref = 1;
+  string title = 2;
+  google.protobuf.Timestamp due_time = 3;
+  google.protobuf.Timestamp completed_time = 4;
+  google.protobuf.Struct external_data = 5;
+}
+
+message UpsertExternalTasksRequest {
+  // Required. Also the namespace for external_refs.
+  string source = 1;
+  repeated ExternalTask tasks = 2;
+  // Labels ensured present on every task in the batch (created or updated).
+  // Additive only; never removes labels the user added.
+  repeated string apply_labels = 3;
+  // When true, the batch is this source's complete current state: the
+  // source's tasks NOT in the batch are deleted. When false, absent tasks
+  // are left alone (incremental update).
+  bool full_snapshot = 4;
+}
+
+message UpsertExternalTasksResponse {
+  int32 created = 1;
+  int32 updated = 2;
+  // Present in the batch but identical to the stored task; not rewritten,
+  // revision unchanged.
+  int32 unchanged = 3;
+  // Only nonzero for full_snapshot batches.
+  int32 deleted = 4;
+}
+
+message WatchTasksRequest {}
+
+// The first message on every stream is EMPTY (no change set): it confirms
+// the subscription is active, so a client can safely ListTasks after
+// receiving it with no gap. Ignore any message whose change is absent or
+// unrecognized — new change kinds may be added additively later.
+message WatchTasksResponse {
+  oneof change {
+    // The task's state after a create or update.
+    Task task = 1;
+    string deleted_task_id = 2;
+  }
+}
+
+message ListLabelsRequest {
+  // By default counts cover active tasks only, and labels used solely by
+  // completed tasks are omitted. When true, completed tasks count too.
+  bool include_completed = 1;
+}
+
+message LabelCount {
+  string label = 1;
+  int64 count = 2;
+}
+
+message ListLabelsResponse {
+  repeated LabelCount labels = 1;
+}

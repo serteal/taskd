@@ -1,48 +1,31 @@
 package main
 
 import (
-	"fmt"
+	"errors"
 	"os"
-	"strings"
 )
 
-// destructiveIntents is the default-refused set for agent callers. DESIGN §14:
-// MCP callers are a distinct principal class with no confirm dialog, so
-// destructive (and confirm-gated) intents are refused by default. "delete" is
-// the only such standard intent today; future destructive names added here are
-// refused by construction until explicitly allowlisted.
-var destructiveIntents = map[string]bool{
-	"delete": true,
-}
+// allowDestructiveEnv is the opt-in for permanent deletion. Agents (MCP
+// callers) are a distinct principal class with no confirm dialog, so the
+// guard lives here in the agent frontend — the daemon cannot tell an agent
+// from a human.
+const allowDestructiveEnv = "TASKMCP_ALLOW_DESTRUCTIVE"
 
-// guardIntent enforces the agent guardrail client-side, before any RPC: a
-// destructive intent is refused unless the user opted in by naming it in the
-// TASKMCP_ALLOW_DESTRUCTIVE env var (comma-separated allowlist, e.g. "delete").
-// Refusing here — not at the daemon — is deliberate: the daemon cannot tell an
-// agent from a human, so the principal-class policy lives in the agent
-// frontend. A nil return means the intent may proceed.
-func guardIntent(intent string) error {
-	name := strings.ToLower(strings.TrimSpace(intent))
-	if !destructiveIntents[name] {
+// guardDelete enforces the destructive-action guard client-side, before any
+// RPC: a refusal must never reach the daemon. A nil return means deletion
+// may proceed.
+func guardDelete() error {
+	if destructiveAllowed() {
 		return nil
 	}
-	if destructiveAllowed(name) {
-		return nil
-	}
-	return fmt.Errorf(
-		"refused: %q is a destructive action, and agents (MCP callers) have no confirm dialog, so destructive actions are blocked by default (DESIGN §14). "+
-			"To permit it, set the environment variable TASKMCP_ALLOW_DESTRUCTIVE to a comma-separated allowlist that includes %q (e.g. TASKMCP_ALLOW_DESTRUCTIVE=%s).",
-		name, name, name)
+	return errors.New("refused: delete_task permanently and irreversibly deletes a task, and agents have no confirm dialog, so deletion is disabled by default. " +
+		"Marking the task done with complete_task is usually what is wanted instead. " +
+		"To enable deletion, start the task-mcp process with the environment variable " + allowDestructiveEnv + "=1.")
 }
 
-// destructiveAllowed reports whether name appears in the caller's
-// TASKMCP_ALLOW_DESTRUCTIVE allowlist. Read at call time so per-process env
-// changes (and tests) take effect without a restart.
-func destructiveAllowed(name string) bool {
-	for _, entry := range strings.Split(os.Getenv("TASKMCP_ALLOW_DESTRUCTIVE"), ",") {
-		if strings.EqualFold(strings.TrimSpace(entry), name) {
-			return true
-		}
-	}
-	return false
+// destructiveAllowed reports whether the user opted in to deletion. Read at
+// call time so per-process env changes (and tests) take effect without a
+// restart.
+func destructiveAllowed() bool {
+	return os.Getenv(allowDestructiveEnv) == "1"
 }

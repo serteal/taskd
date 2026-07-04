@@ -1,86 +1,78 @@
 package daemon
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
-	"todoapp/internal/plugin"
+	"todoapp/internal/syncer"
 )
 
-// FileConfig is $TASKD_DIR/config.yaml — the phase-2 home of connector
-// instances. It moves behind ConfigService when rules land; the file format
-// stays as import/export.
-//
-//	retention: 720h            # optional, event-log retention
-//	instances:
-//	  - name: cal@personal     # instance name = link namespace
-//	    plugin: ics            # bare name → $TASKD_DIR/plugins/<name>, or an absolute path
-//	    poll: 5m               # optional; else the plugin's hint, floor 30s
-//	    config:                # opaque, passed to the plugin's Configure
-//	      url: file:///Users/me/personal.ics
-//	      horizon_days: 60
+// DefaultListen matches pkg/client.DefaultTarget.
+const DefaultListen = "127.0.0.1:7517"
+
+// FileConfig is dir/config.yaml. Everything is optional; a missing file
+// means all defaults.
 type FileConfig struct {
-	Retention time.Duration    `yaml:"retention"`
-	Instances []InstanceConfig `yaml:"instances"`
+	// TCP listen address, default 127.0.0.1:7517.
+	Listen string `yaml:"listen"`
+	// Optional unix socket to also serve on (created 0600).
+	Socket  string       `yaml:"socket"`
+	Syncers []SyncerYAML `yaml:"syncers"`
 }
 
-type InstanceConfig struct {
-	Name   string         `yaml:"name"`
-	Plugin string         `yaml:"plugin"`
-	Poll   time.Duration  `yaml:"poll"`
-	Config map[string]any `yaml:"config"`
+// SyncerYAML is one syncers[] entry.
+type SyncerYAML struct {
+	Type string `yaml:"type"`
+	Name string `yaml:"name"`
+	URL  string `yaml:"url"`
+	Path string `yaml:"path"`
+	// Go duration string, e.g. "15m".
+	Interval string   `yaml:"interval"`
+	Labels   []string `yaml:"labels"`
 }
 
-func ConfigPath(dir string) string { return filepath.Join(dir, "config.yaml") }
-
-// loadFileConfig reads the config file; a missing file is an empty config.
 func loadFileConfig(dir string) (FileConfig, error) {
-	var fc FileConfig
-	raw, err := os.ReadFile(ConfigPath(dir))
-	if errors.Is(err, os.ErrNotExist) {
-		return fc, nil
+	cfg := FileConfig{Listen: DefaultListen}
+	b, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if os.IsNotExist(err) {
+		return cfg, nil
 	}
 	if err != nil {
-		return fc, fmt.Errorf("config: %w", err)
+		return cfg, err
 	}
-	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
-	dec.KnownFields(true) // typos in config must fail loudly, not silently no-op
-	if err := dec.Decode(&fc); err != nil {
-		return fc, fmt.Errorf("config %s: %w", ConfigPath(dir), err)
+	if err := yaml.Unmarshal(b, &cfg); err != nil {
+		return cfg, fmt.Errorf("parsing config.yaml: %w", err)
 	}
-	seen := map[string]bool{}
-	for i, inst := range fc.Instances {
-		if inst.Name == "" || inst.Plugin == "" {
-			return fc, fmt.Errorf("config: instance %d needs both name and plugin", i)
-		}
-		if seen[inst.Name] {
-			return fc, fmt.Errorf("config: duplicate instance name %q", inst.Name)
-		}
-		seen[inst.Name] = true
+	if cfg.Listen == "" {
+		cfg.Listen = DefaultListen
 	}
-	return fc, nil
+	return cfg, nil
 }
 
-// resolveInstance turns an InstanceConfig into the host's Instance,
-// resolving bare plugin names against $dir/plugins.
-func resolveInstance(dir string, ic InstanceConfig) (plugin.Instance, error) {
-	bin := ic.Plugin
-	if !filepath.IsAbs(bin) {
-		bin = filepath.Join(dir, "plugins", ic.Plugin)
+func (y SyncerYAML) toConfig() (syncer.Config, error) {
+	cfg := syncer.Config{Type: y.Type, Name: y.Name, URL: y.URL, Path: y.Path, Labels: y.Labels}
+	if y.Interval != "" {
+		d, err := time.ParseDuration(y.Interval)
+		if err != nil {
+			return cfg, fmt.Errorf("syncer %s/%s: bad interval %q: %w", y.Type, y.Name, y.Interval, err)
+		}
+		cfg.Interval = d
 	}
-	if _, err := os.Stat(bin); err != nil {
-		return plugin.Instance{}, fmt.Errorf("instance %q: plugin binary %s: %w", ic.Name, bin, err)
+	return cfg, nil
+}
+
+// Dir resolves the data directory: TASKD_DIR env var, else ~/.taskd.
+func Dir() (string, error) {
+	if v := os.Getenv("TASKD_DIR"); v != "" {
+		return v, nil
 	}
-	return plugin.Instance{
-		Name:   ic.Name,
-		Binary: bin,
-		Config: ic.Config,
-		Poll:   ic.Poll,
-	}, nil
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".taskd"), nil
 }

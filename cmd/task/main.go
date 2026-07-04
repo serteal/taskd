@@ -1,19 +1,16 @@
-// task is the CLI for taskd: a thin gRPC client built on pkg/taskclient.
+// Command task is the CLI for taskd. It talks to the daemon exclusively
+// through the public TaskService API (pkg/client + gen); it has no access to
+// the store or server internals.
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := newRootCmd().ExecuteContext(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "task:", err)
+	if err := newRootCmd(os.Stdout).Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }

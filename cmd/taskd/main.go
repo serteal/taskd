@@ -1,38 +1,26 @@
-// taskd is the task tracker daemon. Start it directly, via `task daemon run`,
-// or from launchd/systemd — nothing is forced.
+// Command taskd is the task daemon: it owns the SQLite store and serves the
+// TaskService API.
 package main
 
 import (
 	"context"
 	"flag"
-	"fmt"
-	"log/slog"
-	"os"
+	"log"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"todoapp/internal/daemon"
-	"todoapp/internal/server"
 )
 
 func main() {
-	dir := flag.String("dir", "", "data directory (default $TASKD_DIR or ~/.local/share/taskd)")
-	retention := flag.Duration("retention", 30*24*time.Hour, "event log retention")
-	version := flag.Bool("version", false, "print version and exit")
+	dir := flag.String("dir", "", "data directory (default $TASKD_DIR or ~/.taskd)")
+	listen := flag.String("listen", "", "TCP listen address (default from config.yaml or 127.0.0.1:7517)")
 	flag.Parse()
 
-	if *version {
-		fmt.Println(server.Version)
-		return
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if err := daemon.Run(ctx, daemon.Config{Dir: *dir, Retention: *retention, Log: log}); err != nil {
-		log.Error("taskd exited", "err", err)
-		os.Exit(1)
+	if err := daemon.Run(ctx, daemon.Options{Dir: *dir, Listen: *listen}); err != nil {
+		log.Fatalf("taskd: %v", err)
 	}
 }

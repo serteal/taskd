@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"io"
-	"log/slog"
-	"os"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,82 +13,43 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	taskcorev1 "todoapp/gen/taskcore/v1"
-	"todoapp/internal/daemon"
-	"todoapp/pkg/taskclient"
+	taskpb "todoapp/gen/task"
+	"todoapp/gen/task/taskconnect"
+	"todoapp/internal/server"
+	"todoapp/internal/store"
 )
 
-// NOTE: test names are deliberately short — t.TempDir() feeds the unix socket
-// path, and macOS caps those at 104 bytes.
-
-// startDaemon runs taskd in-process against a fresh temp dir and returns it;
-// the daemon stops (and its error is checked) at cleanup.
-func startDaemon(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	ctx, cancel := context.WithCancel(context.Background())
-	errc := make(chan error, 1)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	go func() { errc <- daemon.Run(ctx, daemon.Config{Dir: dir, Log: log}) }()
-	t.Cleanup(func() {
-		cancel()
-		if err := <-errc; err != nil {
-			t.Errorf("daemon exit: %v", err)
-		}
-	})
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(daemon.SocketPath(dir)); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("socket never appeared")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	return dir
-}
-
-// connect builds the bridge against the daemon at dir and connects an MCP
-// client to it over the SDK's in-memory transports. Returns the client
-// session (torn down at cleanup).
-func connect(t *testing.T, dir string) *mcp.ClientSession {
+// newSession serves a real store over a real HTTP server (the pattern from
+// internal/server's tests), points a bridge at it, and connects an
+// in-process MCP client over the SDK's in-memory transports.
+func newSession(t *testing.T) *mcp.ClientSession {
 	t.Helper()
 	ctx := context.Background()
-	sock := daemon.SocketPath(dir)
 
-	cl, err := taskclient.Dial(ctx, sock, clientName)
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"), nil)
 	if err != nil {
-		t.Fatalf("dial: %v", err)
+		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { cl.Close() })
-	if _, err := cl.Ping(ctx); err != nil {
-		t.Fatalf("ping: %v", err)
-	}
-	conn, err := dialExtra(sock)
-	if err != nil {
-		t.Fatalf("dialExtra: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { st.Close() })
+	path, handler := server.New(st).Handler()
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
 
-	b := &bridge{
-		cl:      cl,
-		intents: taskcorev1.NewIntentServiceClient(conn),
-		rules:   taskcorev1.NewRuleServiceClient(conn),
-	}
-	srv := b.server()
+	b := &bridge{tc: taskconnect.NewTaskServiceClient(ts.Client(), ts.URL)}
 
 	// The server transport must be connected before the client transport: the
 	// client initializes the MCP session during its own connect.
 	serverT, clientT := mcp.NewInMemoryTransports()
-	ss, err := srv.Connect(ctx, serverT, nil)
+	ss, err := b.server().Connect(ctx, serverT, nil)
 	if err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
 	t.Cleanup(func() { ss.Close() })
 
-	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
-	sess, err := client.Connect(ctx, clientT, nil)
+	cl := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
+	sess, err := cl.Connect(ctx, clientT, nil)
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -95,16 +57,25 @@ func connect(t *testing.T, dir string) *mcp.ClientSession {
 	return sess
 }
 
-// callTool invokes a tool and returns the result plus its concatenated text
-// content. A CallTool transport error fails the test; tool-level errors are
-// reported through res.IsError, which callers inspect.
-func callTool(t *testing.T, sess *mcp.ClientSession, name string, args map[string]any) (*mcp.CallToolResult, string) {
+// call invokes a tool. A transport-level error fails the test; tool-level
+// errors are reported through res.IsError, which callers inspect.
+func call(t *testing.T, sess *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {
 	t.Helper()
 	res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		t.Fatalf("CallTool %s: %v", name, err)
 	}
-	return res, resultText(res)
+	return res
+}
+
+// ok invokes a tool and fails the test on a tool error.
+func ok(t *testing.T, sess *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	res := call(t, sess, name, args)
+	if res.IsError {
+		t.Fatalf("%s(%v) failed: %s", name, args, resultText(res))
+	}
+	return res
 }
 
 func resultText(res *mcp.CallToolResult) string {
@@ -117,214 +88,280 @@ func resultText(res *mcp.CallToolResult) string {
 	return b.String()
 }
 
-// parseItem unmarshals the first protojson line of txt into an Item.
-func parseItem(t *testing.T, txt string) *taskcorev1.Item {
+// structured re-serializes a result's structured content so it can be
+// decoded into concrete types.
+func structured(t *testing.T, res *mcp.CallToolResult) []byte {
 	t.Helper()
-	line := strings.SplitN(strings.TrimSpace(txt), "\n", 2)[0]
-	it := &taskcorev1.Item{}
-	if err := protojson.Unmarshal([]byte(line), it); err != nil {
-		t.Fatalf("parse item %q: %v", line, err)
+	if res.StructuredContent == nil {
+		t.Fatalf("result has no structured content (text: %s)", resultText(res))
 	}
-	return it
+	raw, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	return raw
 }
 
-// Scenario 1: tools/list lists every tool with a non-empty description, and
-// query_items teaches the filter language.
+// asTask decodes a single-task structured result via protojson.
+func asTask(t *testing.T, res *mcp.CallToolResult) *taskpb.Task {
+	t.Helper()
+	var tk taskpb.Task
+	if err := protojson.Unmarshal(structured(t, res), &tk); err != nil {
+		t.Fatalf("unmarshal task from %s: %v", structured(t, res), err)
+	}
+	return &tk
+}
+
+// asTasks decodes a list_tasks structured result: {"tasks": [...]}.
+func asTasks(t *testing.T, res *mcp.CallToolResult) []*taskpb.Task {
+	t.Helper()
+	var wrap struct {
+		Tasks []json.RawMessage `json:"tasks"`
+	}
+	if err := json.Unmarshal(structured(t, res), &wrap); err != nil {
+		t.Fatalf("unmarshal task list: %v", err)
+	}
+	tasks := make([]*taskpb.Task, len(wrap.Tasks))
+	for i, raw := range wrap.Tasks {
+		tasks[i] = &taskpb.Task{}
+		if err := protojson.Unmarshal(raw, tasks[i]); err != nil {
+			t.Fatalf("unmarshal task %d from %s: %v", i, raw, err)
+		}
+	}
+	return tasks
+}
+
+func titles(tasks []*taskpb.Task) []string {
+	out := make([]string, len(tasks))
+	for i, tk := range tasks {
+		out[i] = tk.GetTitle()
+	}
+	return out
+}
+
 func TestToolsList(t *testing.T) {
-	sess := connect(t, startDaemon(t))
+	sess := newSession(t)
 	res, err := sess.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
-		"query_items", "get_item", "create_task", "update_todo",
-		"complete_task", "reopen_task", "invoke_intent", "list_pending",
-		"list_rules", "list_views", "list_kinds",
+		"list_tasks", "get_task", "create_task", "update_task",
+		"complete_task", "reopen_task", "delete_task", "list_labels",
 	}
 	got := map[string]string{}
 	for _, tl := range res.Tools {
 		got[tl.Name] = tl.Description
 	}
 	for _, name := range want {
-		desc, ok := got[name]
-		if !ok {
+		desc, found := got[name]
+		if !found {
 			t.Errorf("tools/list missing %q", name)
 			continue
 		}
 		if strings.TrimSpace(desc) == "" {
-			t.Errorf("tool %q has empty description", name)
+			t.Errorf("tool %q has an empty description", name)
 		}
 	}
 	if len(got) != len(want) {
 		t.Errorf("tool count = %d, want %d (%v)", len(got), len(want), got)
 	}
-	qd := got["query_items"]
-	if !strings.Contains(qd, "completed") {
-		t.Errorf("query_items description must mention the 'completed' variable")
-	}
-	if !strings.Contains(qd, "!completed") {
-		t.Errorf("query_items description must include an example filter")
-	}
-}
-
-// Scenario 2: create_task, active query, complete_task, and completion state.
-func TestCreateCompleteFlow(t *testing.T) {
-	sess := connect(t, startDaemon(t))
-
-	_, txt := callTool(t, sess, "create_task", map[string]any{"title": "pay rent", "project": "home"})
-	created := parseItem(t, txt)
-	id := created.GetId()
-	if created.GetTodo().GetTitleOverride() != "pay rent" {
-		t.Fatalf("title = %q", created.GetTodo().GetTitleOverride())
-	}
-	if created.GetTodo().GetProject() != "home" {
-		t.Fatalf("project = %q", created.GetTodo().GetProject())
-	}
-
-	_, active := callTool(t, sess, "query_items", map[string]any{"filter": "!completed"})
-	if !strings.Contains(active, id) {
-		t.Fatalf("active query is missing the new item %s:\n%s", id, active)
-	}
-
-	if res, msg := callTool(t, sess, "complete_task", map[string]any{"id": id}); res.IsError {
-		t.Fatalf("complete_task failed: %s", msg)
-	}
-
-	_, active2 := callTool(t, sess, "query_items", map[string]any{"filter": "!completed"})
-	if strings.Contains(active2, id) {
-		t.Fatalf("completed item %s still shows in the active query", id)
-	}
-
-	_, g := callTool(t, sess, "get_item", map[string]any{"id": id})
-	done := parseItem(t, g)
-	if !done.GetTodo().GetCompleted() {
-		t.Errorf("get_item: completed = false, want true")
-	}
-	if done.GetTodo().GetCompletedAt() == nil {
-		t.Errorf("get_item: completed_at not stamped")
-	}
-}
-
-// Scenario 3: update_todo builds a mask from present fields; a bad RFC3339 due
-// yields a clean tool error.
-func TestUpdateTodo(t *testing.T) {
-	sess := connect(t, startDaemon(t))
-	_, txt := callTool(t, sess, "create_task", map[string]any{"title": "review PR"})
-	id := parseItem(t, txt).GetId()
-
-	res, msg := callTool(t, sess, "update_todo", map[string]any{
-		"id": id,
-		"set": map[string]any{
-			"labels":  []string{"urgent", "work"},
-			"project": "work/reviews",
-		},
-	})
-	if res.IsError {
-		t.Fatalf("update_todo failed: %s", msg)
-	}
-	updated := parseItem(t, msg)
-	if updated.GetTodo().GetProject() != "work/reviews" {
-		t.Errorf("project = %q, want work/reviews", updated.GetTodo().GetProject())
-	}
-	if labels := updated.GetTodo().GetLabels(); len(labels) != 2 {
-		t.Errorf("labels = %v, want two", labels)
-	}
-
-	bad, badMsg := callTool(t, sess, "update_todo", map[string]any{
-		"id":  id,
-		"set": map[string]any{"due_rfc3339": "next tuesday"},
-	})
-	if !bad.IsError {
-		t.Fatalf("expected a tool error for a bad RFC3339 due")
-	}
-	if !strings.Contains(badMsg, "RFC3339") {
-		t.Errorf("error should name the expected format, got %q", badMsg)
-	}
-}
-
-// Scenario 4: the destructive guard refuses "delete" client-side without an
-// allowlist, and lets it through to the daemon with one.
-func TestInvokeIntentGuard(t *testing.T) {
-	sess := connect(t, startDaemon(t))
-	_, txt := callTool(t, sess, "create_task", map[string]any{"title": "native task"})
-	id := parseItem(t, txt).GetId()
-
-	// Without the allowlist: refused before any RPC. The refusal cites the
-	// policy env var and must NOT carry a daemon-side error.
-	res, msg := callTool(t, sess, "invoke_intent", map[string]any{"item_id": id, "intent": "delete"})
-	if !res.IsError {
-		t.Fatalf("delete should be refused without an allowlist")
-	}
-	if !strings.Contains(msg, "TASKMCP_ALLOW_DESTRUCTIVE") {
-		t.Errorf("refusal should cite the policy env var, got %q", msg)
-	}
-	if strings.Contains(msg, "FailedPrecondition") || strings.Contains(strings.ToLower(msg), "no remote") {
-		t.Errorf("refusal leaked a daemon error (RPC should not have happened): %q", msg)
-	}
-
-	// With the allowlist: the guard passes, the RPC reaches the daemon, and a
-	// native item (no mirror) fails with FailedPrecondition/not-mirrored —
-	// a DIFFERENT error, proving the guard let the call through.
-	t.Setenv("TASKMCP_ALLOW_DESTRUCTIVE", "delete")
-	res2, msg2 := callTool(t, sess, "invoke_intent", map[string]any{"item_id": id, "intent": "delete"})
-	if !res2.IsError {
-		t.Fatalf("expected the daemon's not-mirrored error once the guard passes")
-	}
-	if strings.Contains(msg2, "TASKMCP_ALLOW_DESTRUCTIVE") {
-		t.Errorf("with the allowlist this should no longer be a refusal, got %q", msg2)
-	}
-	if !strings.Contains(msg2, "FailedPrecondition") && !strings.Contains(strings.ToLower(msg2), "remote") {
-		t.Errorf("expected the daemon's not-mirrored error, got %q", msg2)
-	}
-}
-
-// Scenario 5: the views resource lists the well-known views, and the view
-// template returns a view's items.
-func TestResources(t *testing.T) {
-	dir := startDaemon(t)
-	sess := connect(t, dir)
-
-	_, txt := callTool(t, sess, "create_task", map[string]any{"title": "archive me"})
-	id := parseItem(t, txt).GetId()
-	if res, msg := callTool(t, sess, "complete_task", map[string]any{"id": id}); res.IsError {
-		t.Fatalf("complete_task failed: %s", msg)
-	}
-
-	views, err := sess.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: "taskcore://views"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	vtext := views.Contents[0].Text
-	for _, name := range []string{"inbox", "today", "completed"} {
-		if !strings.Contains(vtext, name) {
-			t.Errorf("taskcore://views is missing well-known view %q:\n%s", name, vtext)
+	// The descriptions are the API docs: they must teach the label
+	// conventions and the agent-labeling convention.
+	for _, frag := range []string{"p1", "project:", "context:", "RFC3339"} {
+		if !strings.Contains(got["list_tasks"], frag) {
+			t.Errorf("list_tasks description must mention %q", frag)
 		}
 	}
-
-	completed, err := sess.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: "taskcore://view/completed"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(completed.Contents[0].Text, id) {
-		t.Errorf("taskcore://view/completed should list the completed item %s:\n%s", id, completed.Contents[0].Text)
+	if !strings.Contains(got["create_task"], "agent:") {
+		t.Errorf("create_task description must tell agents to label with agent:<name>")
 	}
 }
 
-// Scenario 6: the native kind "task" appears in both the tool and the schema
-// resource.
-func TestListKinds(t *testing.T) {
-	sess := connect(t, startDaemon(t))
+func TestLifecycle(t *testing.T) {
+	sess := newSession(t)
+	due := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 
-	_, kinds := callTool(t, sess, "list_kinds", map[string]any{})
-	if !strings.Contains(kinds, "task") {
-		t.Errorf("list_kinds tool is missing kind \"task\":\n%s", kinds)
+	// Create.
+	created := asTask(t, ok(t, sess, "create_task", map[string]any{
+		"title":    "Buy milk",
+		"notes":    "2 liters",
+		"labels":   []string{"p1", "project:home", "agent:claude"},
+		"due_time": due.Format(time.RFC3339),
+	}))
+	if created.GetId() == "" || created.GetRevision() == 0 {
+		t.Fatalf("created task missing id/revision: %v", created)
+	}
+	if created.GetTitle() != "Buy milk" || created.GetNotes() != "2 liters" {
+		t.Errorf("created = %q / %q, want Buy milk / 2 liters", created.GetTitle(), created.GetNotes())
+	}
+	if len(created.GetLabels()) != 3 {
+		t.Errorf("labels = %v, want 3", created.GetLabels())
+	}
+	if !created.GetDueTime().AsTime().Equal(due) {
+		t.Errorf("due = %v, want %v", created.GetDueTime().AsTime(), due)
+	}
+	ok(t, sess, "create_task", map[string]any{"title": "Walk dog", "labels": []string{"project:home"}})
+
+	// A malformed timestamp is a clean tool error naming the format.
+	if bad := call(t, sess, "create_task", map[string]any{"title": "x", "due_time": "next tuesday"}); !bad.IsError {
+		t.Errorf("expected a tool error for a non-RFC3339 due_time")
+	} else if !strings.Contains(resultText(bad), "RFC3339") {
+		t.Errorf("bad-timestamp error should name RFC3339, got %q", resultText(bad))
 	}
 
-	schema, err := sess.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: "taskcore://schema"})
-	if err != nil {
-		t.Fatal(err)
+	// List: labels_all narrows conjunctively.
+	if got := asTasks(t, ok(t, sess, "list_tasks", map[string]any{"labels_all": []string{"project:home"}})); len(got) != 2 {
+		t.Errorf("labels_all=[project:home] = %v, want 2 tasks", titles(got))
 	}
-	if !strings.Contains(schema.Contents[0].Text, "task") {
-		t.Errorf("taskcore://schema is missing kind \"task\":\n%s", schema.Contents[0].Text)
+	got := asTasks(t, ok(t, sess, "list_tasks", map[string]any{"labels_all": []string{"p1", "project:home"}}))
+	if len(got) != 1 || got[0].GetTitle() != "Buy milk" {
+		t.Errorf("labels_all=[p1 project:home] = %v, want [Buy milk]", titles(got))
+	}
+	// limit truncates.
+	if got := asTasks(t, ok(t, sess, "list_tasks", map[string]any{"limit": 1})); len(got) != 1 {
+		t.Errorf("limit=1 returned %d tasks", len(got))
+	}
+
+	// Update mask correctness: only the provided field changes.
+	updated := asTask(t, ok(t, sess, "update_task", map[string]any{
+		"id":    created.GetId(),
+		"notes": "2 liters, oat",
+	}))
+	if updated.GetNotes() != "2 liters, oat" {
+		t.Errorf("notes = %q after update", updated.GetNotes())
+	}
+	if updated.GetTitle() != "Buy milk" || len(updated.GetLabels()) != 3 || !updated.GetDueTime().AsTime().Equal(due) {
+		t.Errorf("update touched unprovided fields: %v", updated)
+	}
+
+	// Labels REPLACE the whole set.
+	updated = asTask(t, ok(t, sess, "update_task", map[string]any{
+		"id":     created.GetId(),
+		"labels": []string{"p2", "project:home"},
+	}))
+	if got := updated.GetLabels(); len(got) != 2 || got[0] != "p2" || got[1] != "project:home" {
+		t.Errorf("labels after replace = %v, want [p2 project:home]", got)
+	}
+
+	// clear_due removes the due date and nothing else.
+	updated = asTask(t, ok(t, sess, "update_task", map[string]any{
+		"id":        created.GetId(),
+		"clear_due": true,
+	}))
+	if updated.GetDueTime() != nil {
+		t.Errorf("due survived clear_due: %v", updated.GetDueTime())
+	}
+	if updated.GetNotes() != "2 liters, oat" {
+		t.Errorf("clear_due touched notes: %q", updated.GetNotes())
+	}
+
+	// A stale expected_revision surfaces as a re-read instruction.
+	stale := call(t, sess, "update_task", map[string]any{
+		"id":                created.GetId(),
+		"title":             "Buy oat milk",
+		"expected_revision": 1,
+	})
+	if !stale.IsError {
+		t.Fatalf("stale expected_revision should be a tool error")
+	}
+	if msg := resultText(stale); !strings.Contains(msg, "get_task") {
+		t.Errorf("conflict error should tell the agent to re-read via get_task, got %q", msg)
+	}
+
+	// Complete, then filter by completion state.
+	done := asTask(t, ok(t, sess, "complete_task", map[string]any{"id": created.GetId()}))
+	if done.GetCompletedTime() == nil {
+		t.Fatalf("complete_task did not stamp completed_time")
+	}
+	if got := asTasks(t, ok(t, sess, "list_tasks", map[string]any{"labels_all": []string{"project:home"}})); len(got) != 2 {
+		t.Errorf("completed omitted should list active AND completed, got %v", titles(got))
+	}
+	got = asTasks(t, ok(t, sess, "list_tasks", map[string]any{"completed": false}))
+	if len(got) != 1 || got[0].GetTitle() != "Walk dog" {
+		t.Errorf("completed=false = %v, want [Walk dog]", titles(got))
+	}
+	got = asTasks(t, ok(t, sess, "list_tasks", map[string]any{"completed": true}))
+	if len(got) != 1 || got[0].GetTitle() != "Buy milk" {
+		t.Errorf("completed=true = %v, want [Buy milk]", titles(got))
+	}
+
+	// Reopen clears completed_time.
+	if reopened := asTask(t, ok(t, sess, "reopen_task", map[string]any{"id": created.GetId()})); reopened.GetCompletedTime() != nil {
+		t.Errorf("reopen_task left completed_time set: %v", reopened.GetCompletedTime())
+	}
+}
+
+func TestDeleteGuard(t *testing.T) {
+	sess := newSession(t)
+	id := asTask(t, ok(t, sess, "create_task", map[string]any{"title": "victim"})).GetId()
+
+	// Without the opt-in: refused before any RPC, steering to complete_task.
+	t.Setenv("TASKMCP_ALLOW_DESTRUCTIVE", "")
+	res := call(t, sess, "delete_task", map[string]any{"id": id})
+	if !res.IsError {
+		t.Fatalf("delete_task should be refused without TASKMCP_ALLOW_DESTRUCTIVE=1")
+	}
+	msg := resultText(res)
+	if !strings.Contains(msg, "TASKMCP_ALLOW_DESTRUCTIVE") {
+		t.Errorf("refusal should cite the opt-in env var, got %q", msg)
+	}
+	if !strings.Contains(msg, "complete_task") {
+		t.Errorf("refusal should point at complete_task, got %q", msg)
+	}
+	ok(t, sess, "get_task", map[string]any{"id": id}) // still alive
+
+	// With the opt-in: deletion goes through and the task is gone.
+	t.Setenv("TASKMCP_ALLOW_DESTRUCTIVE", "1")
+	var out struct {
+		ID      string `json:"id"`
+		Deleted bool   `json:"deleted"`
+	}
+	if err := json.Unmarshal(structured(t, ok(t, sess, "delete_task", map[string]any{"id": id})), &out); err != nil {
+		t.Fatalf("delete result: %v", err)
+	}
+	if out.ID != id || !out.Deleted {
+		t.Errorf("delete result = %+v, want deleted %s", out, id)
+	}
+	gone := call(t, sess, "get_task", map[string]any{"id": id})
+	if !gone.IsError {
+		t.Fatalf("get_task after delete should fail")
+	}
+	if msg := resultText(gone); !strings.Contains(msg, "not_found") {
+		t.Errorf("post-delete get should surface not_found, got %q", msg)
+	}
+}
+
+func TestListLabels(t *testing.T) {
+	sess := newSession(t)
+	ok(t, sess, "create_task", map[string]any{"title": "A", "labels": []string{"project:home", "p1"}})
+	doneID := asTask(t, ok(t, sess, "create_task", map[string]any{"title": "B", "labels": []string{"project:home"}})).GetId()
+	ok(t, sess, "complete_task", map[string]any{"id": doneID})
+
+	counts := func(args map[string]any) map[string]int64 {
+		t.Helper()
+		var wrap struct {
+			Labels []struct {
+				Label string `json:"label"`
+				Count int64  `json:"count"`
+			} `json:"labels"`
+		}
+		if err := json.Unmarshal(structured(t, ok(t, sess, "list_labels", args)), &wrap); err != nil {
+			t.Fatalf("unmarshal labels: %v", err)
+		}
+		m := map[string]int64{}
+		for _, lc := range wrap.Labels {
+			m[lc.Label] = lc.Count
+		}
+		return m
+	}
+
+	active := counts(nil)
+	if active["project:home"] != 1 || active["p1"] != 1 {
+		t.Errorf("active label counts = %v, want project:home=1 p1=1", active)
+	}
+	all := counts(map[string]any{"include_completed": true})
+	if all["project:home"] != 2 || all["p1"] != 1 {
+		t.Errorf("include_completed counts = %v, want project:home=2 p1=1", all)
 	}
 }

@@ -2,387 +2,364 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	taskcorev1 "todoapp/gen/taskcore/v1"
+	taskpb "todoapp/gen/task"
 )
 
+// defaultListLimit is how many tasks list_tasks returns when the caller does
+// not say; the handler pages through the daemon internally up to the limit.
+const defaultListLimit = 100
+
 // registerTools wires every tool to its typed handler. AddTool infers the
-// JSON Schema for each input struct (see the jsonschema tags), so agents get
-// self-describing tools; results are protojson so agents get structured data,
-// not tables.
+// JSON Schema of each input struct from its jsonschema tags, so agents get
+// self-describing tools; results carry structured JSON (protojson for
+// tasks), not prose.
 func (b *bridge) registerTools(s *mcp.Server) {
-	mcp.AddTool(s, &mcp.Tool{Name: "query_items", Description: queryItemsDesc}, b.queryItems)
-	mcp.AddTool(s, &mcp.Tool{Name: "get_item", Description: "Fetch one item by id (a unique id prefix resolves). Returns the full item as protojson."}, b.getItem)
-	mcp.AddTool(s, &mcp.Tool{Name: "create_task", Description: "Create a native task (kind \"task\", the user's own todo). Returns the created item as protojson."}, b.createTask)
-	mcp.AddTool(s, &mcp.Tool{Name: "update_todo", Description: updateTodoDesc}, b.updateTodo)
-	mcp.AddTool(s, &mcp.Tool{Name: "complete_task", Description: "Mark an item completed (stamps completed_at). Optional reason is a free-form qualifier such as \"wontdo\". Returns the item as protojson."}, b.completeTask)
-	mcp.AddTool(s, &mcp.Tool{Name: "reopen_task", Description: "Reopen a completed item (clears completed_at and the reason). Returns the item as protojson."}, b.reopenTask)
-	mcp.AddTool(s, &mcp.Tool{Name: "invoke_intent", Description: invokeIntentDesc}, b.invokeIntent)
-	mcp.AddTool(s, &mcp.Tool{Name: "list_pending", Description: "List outbox intent records (writes headed for remotes). By default only the live outbox (QUEUED, INFLIGHT, FAILED); set all=true to include terminal (CONFIRMED, DISCARDED) records. Returns records as protojson."}, b.listPending)
-	mcp.AddTool(s, &mcp.Tool{Name: "list_rules", Description: "List automation rules in evaluation order, as protojson. Read-only introspection."}, b.listRules)
-	mcp.AddTool(s, &mcp.Tool{Name: "list_views", Description: "List saved views (name, filter, description, order_by), as protojson. Read-only introspection."}, b.listViews)
-	mcp.AddTool(s, &mcp.Tool{Name: "list_kinds", Description: "List item kinds and their facet bindings (the queryable shape), as protojson. Read-only introspection."}, b.listKinds)
+	mcp.AddTool(s, &mcp.Tool{Name: "list_tasks", Description: listTasksDesc}, b.listTasks)
+	mcp.AddTool(s, &mcp.Tool{Name: "get_task", Description: getTaskDesc}, b.getTask)
+	mcp.AddTool(s, &mcp.Tool{Name: "create_task", Description: createTaskDesc}, b.createTask)
+	mcp.AddTool(s, &mcp.Tool{Name: "update_task", Description: updateTaskDesc}, b.updateTask)
+	mcp.AddTool(s, &mcp.Tool{Name: "complete_task", Description: completeTaskDesc}, b.completeTask)
+	mcp.AddTool(s, &mcp.Tool{Name: "reopen_task", Description: reopenTaskDesc}, b.reopenTask)
+	mcp.AddTool(s, &mcp.Tool{Name: "delete_task", Description: deleteTaskDesc}, b.deleteTask)
+	mcp.AddTool(s, &mcp.Tool{Name: "list_labels", Description: listLabelsDesc}, b.listLabels)
 }
 
-const queryItemsDesc = `Query items with a CEL filter; returns matching items as protojson, one JSON item per line.
+const listTasksDesc = `List tasks matching a structured filter. Every filter dimension you set must match (AND); an empty filter matches all tasks. Returns {"tasks": [...]} with each task as JSON.
 
-The filter is a CEL boolean expression evaluated per item. Variables available:
-  completed  (bool)      todo completed?
-  labels     (list)      todo labels
-  project    (string)    todo project path, e.g. "work/reviews"
-  kind       (string)    "task" for native items, else a plugin kind
-  state      (string)    raw mirror state for tracked items
-  due        (timestamp) effective due date
-  has_due    (bool)      whether an effective due date exists
-  snoozed    (bool)      currently snoozed?
-  now        (timestamp) current time
-  item.*                 the raw Item message, e.g. item.todo.note
+Label conventions — tasks classify by labels plus an optional due date, nothing else:
+- priorities are the labels "p1" (highest), "p2", "p3"
+- projects are "project:<name>", e.g. "project:home"
+- contexts are "context:<name>", e.g. "context:errands"
+Label matching is exact and case-sensitive. labels_any matches tasks carrying at least one of the given labels; labels_all requires all of them.
 
-Examples:
-  !completed && "urgent" in labels
-  kind == "calendar.event" && has_due && due < now + duration("24h")
-  completed && project == "work/reviews"
+Other dimensions:
+- completed: omit to get active AND completed tasks; true for only completed; false for only active.
+- due_before / due_after: RFC3339 timestamps forming a half-open range (due_after <= due_time < due_before); either bound may be set alone. Tasks without a due date never match a bound.
+- has_due: true for only tasks with a due date, false for only tasks without one.
+- source: exact match on the syncing integration name (e.g. "github", "ics:work"); pass "" to match only local, non-synced tasks; omit to match any source.
+- text: case-insensitive substring match over title and notes.
 
-order_by: a column optionally followed by asc/desc (due, created_at, updated_at, project, kind); default "created_at desc".
-limit: max items to return; default 50, capped at 200.`
+Ownership note: synced tasks (source != "") have title, due_time, and completed_time owned by their source system and overwritten on every sync — labels and notes are the user-owned fields an agent should annotate.`
 
-const updateTodoDesc = `Update the user-owned (todo) fields of an item, building a field mask from the fields you set — only present fields are written. Mirror/remote fields are not editable here (use invoke_intent). Returns the item as protojson.`
+const getTaskDesc = `Fetch one task by id. Returns the complete task as JSON, including external_data — the source-specific detail (PR author, event location, ...) carried verbatim for synced tasks.`
 
-const invokeIntentDesc = `Invoke a semantic intent against an item's connector — the write-through path toward the remote system. Standard intents: rename, add_comment, set_due, set_start, assign, set_priority, set_completed, delete.
+const createTaskDesc = `Create a local task. Only title is required. Classify with labels: priorities are "p1"/"p2"/"p3", projects "project:<name>", contexts "context:<name>". due_time is an RFC3339 timestamp.
 
-GUARDRAIL (DESIGN §14): agents have no confirm dialog, so destructive intents (delete) are refused unless the user opted in via the TASKMCP_ALLOW_DESTRUCTIVE env allowlist. Content intents pass through.
+When you create a task for yourself as an agent (a reminder, a follow-up), add the label "agent:<agent-name>" (e.g. "agent:claude") so humans can find and filter agent-created tasks.
 
-Returns the IntentRecord as protojson; inspect its "state" (QUEUED / INFLIGHT / CONFIRMED / FAILED) and "lastError" to know whether the remote confirmed, the outbox took over, or delivery failed.`
+This creates local tasks only (source = ""); synced tasks arrive via their source integration, which owns their title/due/completed — on those, labels and notes are the fields to annotate. Returns the created task as JSON, including its server-assigned id and revision.`
 
-// --- input types -----------------------------------------------------------
+const updateTaskDesc = `Update a task, changing ONLY the fields you provide — a field mask is built from the present keys, so absent fields are untouched.
 
-// noInput is the empty argument type for read-only introspection tools.
-type noInput struct{}
+- labels REPLACES the entire label set. To add or remove a single label, call get_task first and send back the full modified set.
+- due_time sets the due date (RFC3339). clear_due removes it. Provide at most one of the two.
+- expected_revision: pass the revision from a previous read to make the update fail instead of silently overwriting if the task changed in between; on that conflict, re-read with get_task and retry.
+- On synced tasks (source != "") title and due_time are owned by the source system and will be overwritten on the next sync; labels and notes are safe to edit.
 
-type queryItemsInput struct {
-	Filter  string `json:"filter,omitempty" jsonschema:"CEL boolean filter over items; empty matches everything. e.g. !completed && \"urgent\" in labels"`
-	OrderBy string `json:"order_by,omitempty" jsonschema:"column optionally followed by asc/desc: due, created_at, updated_at, project, kind. default created_at desc"`
-	Limit   int    `json:"limit,omitempty" jsonschema:"max items to return; default 50, capped at 200"`
+Returns the updated task as JSON.`
+
+const completeTaskDesc = `Mark a task done: sets completed_time to now. This is the normal way to finish with a task — prefer it over delete_task. Returns the updated task as JSON.`
+
+const reopenTaskDesc = `Reopen a completed task: clears completed_time, making it active again. Returns the updated task as JSON.`
+
+const deleteTaskDesc = `PERMANENTLY delete a task — destructive and irreversible. Almost always the wrong tool: complete_task marks a task done while keeping its history. Deletion is refused unless the task-mcp process was started with TASKMCP_ALLOW_DESTRUCTIVE=1.`
+
+const listLabelsDesc = `List every label in use with its task count, as {"labels": [{"label": ..., "count": ...}]}. By default counts cover active tasks only and labels used solely by completed tasks are omitted; set include_completed to count completed tasks too. Useful for discovering the user's projects ("project:*"), contexts, and priority conventions before filtering or labeling.`
+
+// --- input types ------------------------------------------------------------
+
+// Pointer fields distinguish "omitted" from an explicit zero value (false, "",
+// []), which the filter and mask semantics depend on.
+
+type listTasksInput struct {
+	LabelsAny []string `json:"labels_any,omitempty" jsonschema:"match tasks carrying at least one of these labels"`
+	LabelsAll []string `json:"labels_all,omitempty" jsonschema:"match tasks carrying all of these labels"`
+	Completed *bool    `json:"completed,omitempty" jsonschema:"omit for active and completed; true for only completed; false for only active"`
+	DueBefore string   `json:"due_before,omitempty" jsonschema:"RFC3339 exclusive upper bound: due_time < due_before. tasks without a due date never match"`
+	DueAfter  string   `json:"due_after,omitempty" jsonschema:"RFC3339 inclusive lower bound: due_after <= due_time. tasks without a due date never match"`
+	HasDue    *bool    `json:"has_due,omitempty" jsonschema:"true for only tasks with a due date; false for only tasks without one; omit for both"`
+	Source    *string  `json:"source,omitempty" jsonschema:"exact source match, e.g. github or ics:work; the empty string matches only local (non-synced) tasks; omit for any source"`
+	Text      string   `json:"text,omitempty" jsonschema:"case-insensitive substring match over title and notes"`
+	OrderBy   string   `json:"order_by,omitempty" jsonschema:"one of created, updated, due, title, optionally followed by asc or desc (e.g. due asc); default created desc; with due, undated tasks sort last"`
+	Limit     int      `json:"limit,omitempty" jsonschema:"maximum tasks to return; default 100"`
 }
 
-type getItemInput struct {
-	ID string `json:"id" jsonschema:"item id; a unique prefix resolves"`
+type getTaskInput struct {
+	ID string `json:"id" jsonschema:"the task id"`
 }
 
 type createTaskInput struct {
-	Title      string   `json:"title" jsonschema:"the task title (required)"`
-	Project    string   `json:"project,omitempty" jsonschema:"path-style project, e.g. work/reviews"`
-	Labels     []string `json:"labels,omitempty" jsonschema:"labels to attach"`
-	Note       string   `json:"note,omitempty" jsonschema:"free-form note body"`
-	DueRFC3339 string   `json:"due_rfc3339,omitempty" jsonschema:"due date as an RFC3339 timestamp, e.g. 2026-07-03T17:00:00Z"`
+	Title   string   `json:"title" jsonschema:"the task title (required)"`
+	Notes   string   `json:"notes,omitempty" jsonschema:"free-form notes"`
+	Labels  []string `json:"labels,omitempty" jsonschema:"labels to attach, e.g. p1, project:home, agent:claude"`
+	DueTime string   `json:"due_time,omitempty" jsonschema:"due date as an RFC3339 timestamp, e.g. 2026-07-10T17:00:00Z"`
 }
 
-// updateTodoSet carries the fields to change. Pointers distinguish "field
-// present" (write it, even to a zero value like an empty project) from
-// "absent" (leave it untouched).
-type updateTodoSet struct {
-	Title         *string   `json:"title,omitempty" jsonschema:"new display title (todo.title_override)"`
-	Project       *string   `json:"project,omitempty" jsonschema:"new project path; empty string clears it"`
-	Note          *string   `json:"note,omitempty" jsonschema:"new note body"`
-	Labels        *[]string `json:"labels,omitempty" jsonschema:"replacement label set (replaces all labels)"`
-	DueRFC3339    string    `json:"due_rfc3339,omitempty" jsonschema:"new due date (RFC3339); mutually exclusive with clear_due"`
-	ClearDue      bool      `json:"clear_due,omitempty" jsonschema:"clear the due date"`
-	SnoozeRFC3339 string    `json:"snooze_rfc3339,omitempty" jsonschema:"snooze until (RFC3339); mutually exclusive with clear_snooze"`
-	ClearSnooze   bool      `json:"clear_snooze,omitempty" jsonschema:"clear the snooze"`
+type updateTaskInput struct {
+	ID               string    `json:"id" jsonschema:"the task id"`
+	Title            *string   `json:"title,omitempty" jsonschema:"new title"`
+	Notes            *string   `json:"notes,omitempty" jsonschema:"new notes; an empty string clears them"`
+	Labels           *[]string `json:"labels,omitempty" jsonschema:"replacement for the ENTIRE label set; get_task first to add or remove one label"`
+	DueTime          string    `json:"due_time,omitempty" jsonschema:"new due date (RFC3339); mutually exclusive with clear_due"`
+	ClearDue         bool      `json:"clear_due,omitempty" jsonschema:"remove the due date"`
+	ExpectedRevision int       `json:"expected_revision,omitempty" jsonschema:"revision from a previous read; the update fails instead of overwriting if the task has changed since"`
 }
 
-type updateTodoInput struct {
-	ID  string        `json:"id" jsonschema:"item id; a unique prefix resolves"`
-	Set updateTodoSet `json:"set" jsonschema:"fields to change; only present fields are written"`
+type taskIDInput struct {
+	ID string `json:"id" jsonschema:"the task id"`
 }
 
-type completeTaskInput struct {
-	ID     string `json:"id" jsonschema:"item id; a unique prefix resolves"`
-	Reason string `json:"reason,omitempty" jsonschema:"optional completion qualifier, e.g. wontdo"`
-}
-
-type reopenTaskInput struct {
-	ID string `json:"id" jsonschema:"item id; a unique prefix resolves"`
-}
-
-type invokeIntentInput struct {
-	ItemID string         `json:"item_id" jsonschema:"item id; a unique prefix resolves"`
-	Intent string         `json:"intent" jsonschema:"lowercase intent name: rename, add_comment, set_due, set_start, assign, set_priority, set_completed, delete"`
-	Params map[string]any `json:"params,omitempty" jsonschema:"intent parameters, e.g. {\"title\": \"New title\"} for rename"`
-}
-
-type listPendingInput struct {
-	All bool `json:"all,omitempty" jsonschema:"include terminal (CONFIRMED, DISCARDED) records too; default only the live outbox"`
+type listLabelsInput struct {
+	IncludeCompleted bool `json:"include_completed,omitempty" jsonschema:"count completed tasks too; by default counts cover active tasks only"`
 }
 
 // --- handlers ---------------------------------------------------------------
 
-func (b *bridge) queryItems(ctx context.Context, _ *mcp.CallToolRequest, in queryItemsInput) (*mcp.CallToolResult, any, error) {
+func (b *bridge) listTasks(ctx context.Context, _ *mcp.CallToolRequest, in listTasksInput) (*mcp.CallToolResult, any, error) {
+	filter := &taskpb.TaskFilter{
+		LabelsAny: in.LabelsAny,
+		LabelsAll: in.LabelsAll,
+		Completed: in.Completed,
+		HasDue:    in.HasDue,
+		Source:    in.Source,
+		Text:      in.Text,
+	}
+	if in.DueBefore != "" {
+		ts, err := parseRFC3339("due_before", in.DueBefore)
+		if err != nil {
+			return nil, nil, err
+		}
+		filter.DueBefore = ts
+	}
+	if in.DueAfter != "" {
+		ts, err := parseRFC3339("due_after", in.DueAfter)
+		if err != nil {
+			return nil, nil, err
+		}
+		filter.DueAfter = ts
+	}
+
 	limit := in.Limit
 	if limit <= 0 {
-		limit = 50
+		limit = defaultListLimit
 	}
-	if limit > 200 {
-		limit = 200
+	// Page through the daemon until the limit is filled or tasks run out;
+	// the tool itself is unpaginated on purpose (agents want one result).
+	var tasks []*taskpb.Task
+	token := ""
+	for len(tasks) < limit {
+		res, err := b.tc.ListTasks(ctx, connect.NewRequest(&taskpb.ListTasksRequest{
+			Filter:    filter,
+			OrderBy:   in.OrderBy,
+			PageSize:  int32(min(limit-len(tasks), 1000)),
+			PageToken: token,
+		}))
+		if err != nil {
+			return nil, nil, rpcErr(err)
+		}
+		tasks = append(tasks, res.Msg.GetTasks()...)
+		token = res.Msg.GetNextPageToken()
+		if token == "" {
+			break
+		}
 	}
-	resp, err := b.cl.Items().QueryItems(ctx, &taskcorev1.QueryItemsRequest{
-		Filter:   in.Filter,
-		OrderBy:  in.OrderBy,
-		PageSize: int32(limit),
-	})
+	if len(tasks) > limit {
+		tasks = tasks[:limit]
+	}
+	out, err := tasksJSON(tasks)
 	if err != nil {
-		return nil, nil, rpcErr(err)
+		return nil, nil, err
 	}
-	return jsonLinesResult(resp.GetItems())
+	return nil, out, nil
 }
 
-func (b *bridge) getItem(ctx context.Context, _ *mcp.CallToolRequest, in getItemInput) (*mcp.CallToolResult, any, error) {
-	resp, err := b.cl.Items().GetItem(ctx, &taskcorev1.GetItemRequest{Id: in.ID})
+func (b *bridge) getTask(ctx context.Context, _ *mcp.CallToolRequest, in getTaskInput) (*mcp.CallToolResult, any, error) {
+	res, err := b.tc.GetTask(ctx, connect.NewRequest(&taskpb.GetTaskRequest{Id: in.ID}))
 	if err != nil {
 		return nil, nil, rpcErr(err)
 	}
-	return jsonLinesResult([]*taskcorev1.Item{resp.GetItem()})
+	return taskResult(res.Msg.GetTask())
 }
 
 func (b *bridge) createTask(ctx context.Context, _ *mcp.CallToolRequest, in createTaskInput) (*mcp.CallToolResult, any, error) {
-	todo := &taskcorev1.Todo{
-		TitleOverride: in.Title,
-		Project:       in.Project,
-		Labels:        in.Labels,
-		Note:          in.Note,
+	req := &taskpb.CreateTaskRequest{
+		Title:  in.Title,
+		Notes:  in.Notes,
+		Labels: in.Labels,
 	}
-	if in.DueRFC3339 != "" {
-		t, err := parseRFC3339(in.DueRFC3339)
+	if in.DueTime != "" {
+		ts, err := parseRFC3339("due_time", in.DueTime)
 		if err != nil {
 			return nil, nil, err
 		}
-		todo.Due = timestamppb.New(t)
+		req.DueTime = ts
 	}
-	resp, err := b.cl.Items().CreateItem(ctx, &taskcorev1.CreateItemRequest{Todo: todo})
+	res, err := b.tc.CreateTask(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, nil, rpcErr(err)
 	}
-	return jsonLinesResult([]*taskcorev1.Item{resp.GetItem()})
+	return taskResult(res.Msg.GetTask())
 }
 
-func (b *bridge) updateTodo(ctx context.Context, _ *mcp.CallToolRequest, in updateTodoInput) (*mcp.CallToolResult, any, error) {
-	todo := &taskcorev1.Todo{}
+func (b *bridge) updateTask(ctx context.Context, _ *mcp.CallToolRequest, in updateTaskInput) (*mcp.CallToolResult, any, error) {
+	task := &taskpb.Task{}
 	var paths []string
-	set := in.Set
-
-	if set.Title != nil {
-		todo.TitleOverride = *set.Title
-		paths = append(paths, "todo.title_override")
+	if in.Title != nil {
+		task.Title = *in.Title
+		paths = append(paths, "title")
 	}
-	if set.Project != nil {
-		todo.Project = *set.Project
-		paths = append(paths, "todo.project")
+	if in.Notes != nil {
+		task.Notes = *in.Notes
+		paths = append(paths, "notes")
 	}
-	if set.Note != nil {
-		todo.Note = *set.Note
-		paths = append(paths, "todo.note")
-	}
-	if set.Labels != nil {
-		todo.Labels = *set.Labels
-		paths = append(paths, "todo.labels")
+	if in.Labels != nil {
+		task.Labels = *in.Labels
+		paths = append(paths, "labels")
 	}
 	switch {
-	case set.ClearDue && set.DueRFC3339 != "":
-		return nil, nil, errors.New("set: provide only one of due_rfc3339 or clear_due")
-	case set.ClearDue:
-		paths = append(paths, "todo.due") // leaving todo.Due nil clears it
-	case set.DueRFC3339 != "":
-		t, err := parseRFC3339(set.DueRFC3339)
+	case in.ClearDue && in.DueTime != "":
+		return nil, nil, errors.New("provide only one of due_time or clear_due")
+	case in.ClearDue:
+		// Masking due_time while leaving it unset clears the due date.
+		paths = append(paths, "due_time")
+	case in.DueTime != "":
+		ts, err := parseRFC3339("due_time", in.DueTime)
 		if err != nil {
 			return nil, nil, err
 		}
-		todo.Due = timestamppb.New(t)
-		paths = append(paths, "todo.due")
-	}
-	switch {
-	case set.ClearSnooze && set.SnoozeRFC3339 != "":
-		return nil, nil, errors.New("set: provide only one of snooze_rfc3339 or clear_snooze")
-	case set.ClearSnooze:
-		paths = append(paths, "todo.snoozed_until")
-	case set.SnoozeRFC3339 != "":
-		t, err := parseRFC3339(set.SnoozeRFC3339)
-		if err != nil {
-			return nil, nil, err
-		}
-		todo.SnoozedUntil = timestamppb.New(t)
-		paths = append(paths, "todo.snoozed_until")
+		task.DueTime = ts
+		paths = append(paths, "due_time")
 	}
 	if len(paths) == 0 {
-		return nil, nil, errors.New("set: at least one field must be provided")
+		return nil, nil, errors.New("nothing to update: provide at least one of title, notes, labels, due_time, or clear_due")
+	}
+	if in.ExpectedRevision < 0 {
+		return nil, nil, fmt.Errorf("expected_revision must not be negative, got %d", in.ExpectedRevision)
 	}
 
-	resp, err := b.cl.Items().UpdateItem(ctx, &taskcorev1.UpdateItemRequest{
-		Id:         in.ID,
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: paths},
-		Item:       &taskcorev1.Item{Todo: todo},
-	})
+	res, err := b.tc.UpdateTask(ctx, connect.NewRequest(&taskpb.UpdateTaskRequest{
+		Id:               in.ID,
+		UpdateMask:       &fieldmaskpb.FieldMask{Paths: paths},
+		Task:             task,
+		ExpectedRevision: uint64(in.ExpectedRevision),
+	}))
+	if err != nil {
+		var cerr *connect.Error
+		if errors.As(err, &cerr) && cerr.Code() == connect.CodeAborted {
+			return nil, nil, fmt.Errorf(
+				"conflict: %s — the task changed since it was last read (stale expected_revision); call get_task for its current state and revision, then retry the update",
+				cerr.Message())
+		}
+		return nil, nil, rpcErr(err)
+	}
+	return taskResult(res.Msg.GetTask())
+}
+
+func (b *bridge) completeTask(ctx context.Context, _ *mcp.CallToolRequest, in taskIDInput) (*mcp.CallToolResult, any, error) {
+	return b.setCompleted(ctx, in.ID, timestamppb.Now())
+}
+
+func (b *bridge) reopenTask(ctx context.Context, _ *mcp.CallToolRequest, in taskIDInput) (*mcp.CallToolResult, any, error) {
+	return b.setCompleted(ctx, in.ID, nil)
+}
+
+// setCompleted is the shared body of complete_task and reopen_task:
+// completing IS setting completed_time, and masking it while unset re-opens.
+func (b *bridge) setCompleted(ctx context.Context, id string, completed *timestamppb.Timestamp) (*mcp.CallToolResult, any, error) {
+	res, err := b.tc.UpdateTask(ctx, connect.NewRequest(&taskpb.UpdateTaskRequest{
+		Id:         id,
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"completed_time"}},
+		Task:       &taskpb.Task{CompletedTime: completed},
+	}))
 	if err != nil {
 		return nil, nil, rpcErr(err)
 	}
-	return jsonLinesResult([]*taskcorev1.Item{resp.GetItem()})
+	return taskResult(res.Msg.GetTask())
 }
 
-func (b *bridge) completeTask(ctx context.Context, _ *mcp.CallToolRequest, in completeTaskInput) (*mcp.CallToolResult, any, error) {
-	todo := &taskcorev1.Todo{Completed: true}
-	paths := []string{"todo.completed"}
-	if in.Reason != "" {
-		todo.CompletedReason = in.Reason
-		paths = append(paths, "todo.completed_reason")
-	}
-	resp, err := b.cl.Items().UpdateItem(ctx, &taskcorev1.UpdateItemRequest{
-		Id:         in.ID,
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: paths},
-		Item:       &taskcorev1.Item{Todo: todo},
-	})
-	if err != nil {
-		return nil, nil, rpcErr(err)
-	}
-	return jsonLinesResult([]*taskcorev1.Item{resp.GetItem()})
-}
-
-func (b *bridge) reopenTask(ctx context.Context, _ *mcp.CallToolRequest, in reopenTaskInput) (*mcp.CallToolResult, any, error) {
-	resp, err := b.cl.Items().UpdateItem(ctx, &taskcorev1.UpdateItemRequest{
-		Id:         in.ID,
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"todo.completed"}},
-		Item:       &taskcorev1.Item{Todo: &taskcorev1.Todo{Completed: false}},
-	})
-	if err != nil {
-		return nil, nil, rpcErr(err)
-	}
-	return jsonLinesResult([]*taskcorev1.Item{resp.GetItem()})
-}
-
-func (b *bridge) invokeIntent(ctx context.Context, _ *mcp.CallToolRequest, in invokeIntentInput) (*mcp.CallToolResult, any, error) {
-	// Guard client-side, before any RPC: a refusal must never reach the daemon.
-	if err := guardIntent(in.Intent); err != nil {
+func (b *bridge) deleteTask(ctx context.Context, _ *mcp.CallToolRequest, in taskIDInput) (*mcp.CallToolResult, any, error) {
+	// Guard before any RPC: a refusal must never reach the daemon.
+	if err := guardDelete(); err != nil {
 		return nil, nil, err
 	}
-	var params *structpb.Struct
-	if len(in.Params) > 0 {
-		s, err := structpb.NewStruct(in.Params)
-		if err != nil {
-			return nil, nil, fmt.Errorf("params: %v", err)
-		}
-		params = s
+	if _, err := b.tc.DeleteTask(ctx, connect.NewRequest(&taskpb.DeleteTaskRequest{Id: in.ID})); err != nil {
+		return nil, nil, rpcErr(err)
 	}
-	resp, err := b.intents.InvokeIntent(ctx, &taskcorev1.InvokeIntentRequest{
-		ItemId: in.ItemID,
-		Intent: in.Intent,
-		Params: params,
-	})
+	return nil, map[string]any{"id": in.ID, "deleted": true}, nil
+}
+
+func (b *bridge) listLabels(ctx context.Context, _ *mcp.CallToolRequest, in listLabelsInput) (*mcp.CallToolResult, any, error) {
+	res, err := b.tc.ListLabels(ctx, connect.NewRequest(&taskpb.ListLabelsRequest{
+		IncludeCompleted: in.IncludeCompleted,
+	}))
 	if err != nil {
 		return nil, nil, rpcErr(err)
 	}
-	return jsonLinesResult([]*taskcorev1.IntentRecord{resp.GetRecord()})
-}
-
-func (b *bridge) listPending(ctx context.Context, _ *mcp.CallToolRequest, in listPendingInput) (*mcp.CallToolResult, any, error) {
-	req := &taskcorev1.ListIntentsRequest{}
-	if in.All {
-		req.States = allIntentStates
+	type labelCount struct {
+		Label string `json:"label"`
+		Count int64  `json:"count"`
 	}
-	resp, err := b.intents.ListIntents(ctx, req)
-	if err != nil {
-		return nil, nil, rpcErr(err)
+	counts := make([]labelCount, 0, len(res.Msg.GetLabels()))
+	for _, lc := range res.Msg.GetLabels() {
+		counts = append(counts, labelCount{Label: lc.GetLabel(), Count: lc.GetCount()})
 	}
-	return jsonLinesResult(resp.GetRecords())
-}
-
-func (b *bridge) listRules(ctx context.Context, _ *mcp.CallToolRequest, _ noInput) (*mcp.CallToolResult, any, error) {
-	resp, err := b.rules.ListRules(ctx, &taskcorev1.ListRulesRequest{})
-	if err != nil {
-		return nil, nil, rpcErr(err)
-	}
-	return jsonLinesResult(resp.GetRules())
-}
-
-func (b *bridge) listViews(ctx context.Context, _ *mcp.CallToolRequest, _ noInput) (*mcp.CallToolResult, any, error) {
-	resp, err := b.cl.Views().ListViews(ctx, &taskcorev1.ListViewsRequest{})
-	if err != nil {
-		return nil, nil, rpcErr(err)
-	}
-	return jsonLinesResult(resp.GetViews())
-}
-
-func (b *bridge) listKinds(ctx context.Context, _ *mcp.CallToolRequest, _ noInput) (*mcp.CallToolResult, any, error) {
-	resp, err := b.cl.Schema().ListKinds(ctx, &taskcorev1.ListKindsRequest{})
-	if err != nil {
-		return nil, nil, rpcErr(err)
-	}
-	return jsonLinesResult(resp.GetKinds())
-}
-
-// allIntentStates enumerates every IntentState, used by list_pending(all) to
-// escape the default "live outbox only" behavior of an empty states filter.
-var allIntentStates = []taskcorev1.IntentState{
-	taskcorev1.IntentState_INTENT_STATE_QUEUED,
-	taskcorev1.IntentState_INTENT_STATE_INFLIGHT,
-	taskcorev1.IntentState_INTENT_STATE_CONFIRMED,
-	taskcorev1.IntentState_INTENT_STATE_FAILED,
-	taskcorev1.IntentState_INTENT_STATE_DISCARDED,
+	return nil, map[string]any{"labels": counts}, nil
 }
 
 // --- helpers ----------------------------------------------------------------
 
-// parseRFC3339 parses an RFC3339 instant. The tool inputs name the format
-// explicitly (due_rfc3339, snooze_rfc3339); this frontend deliberately accepts
-// only RFC3339 (not the CLI's looser WHEN grammar) because agents pass
-// structured data and an unambiguous format keeps behavior predictable.
-func parseRFC3339(s string) (time.Time, error) {
+// parseRFC3339 parses a timestamp input. This frontend deliberately accepts
+// only RFC3339 — agents pass structured data, and one unambiguous format
+// keeps behavior predictable.
+func parseRFC3339(field, s string) (*timestamppb.Timestamp, error) {
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid RFC3339 timestamp %q (want e.g. 2026-07-03T17:00:00Z): %v", s, err)
+		return nil, fmt.Errorf("%s: invalid RFC3339 timestamp %q (want e.g. 2026-07-10T17:00:00Z)", field, s)
 	}
-	return t, nil
+	return timestamppb.New(t), nil
 }
 
-// jsonLinesResult renders proto messages as protojson, one per line, into a
-// tool result — the structured shape agents consume.
-func jsonLinesResult[T proto.Message](msgs []T) (*mcp.CallToolResult, any, error) {
-	txt, err := jsonLines(msgs)
+// taskResult renders one task as protojson structured content. protojson
+// keeps every timestamp an RFC3339 string, matching the tool inputs.
+func taskResult(t *taskpb.Task) (*mcp.CallToolResult, any, error) {
+	raw, err := protojson.Marshal(t)
 	if err != nil {
 		return nil, nil, err
 	}
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: txt}}}, nil, nil
+	return nil, json.RawMessage(raw), nil
 }
 
-func jsonLines[T proto.Message](msgs []T) (string, error) {
-	var b strings.Builder
-	for i, m := range msgs {
-		out, err := protojson.Marshal(m)
+// tasksJSON wraps tasks in {"tasks": [...]} — structured tool content must
+// be a JSON object, not a bare array.
+func tasksJSON(tasks []*taskpb.Task) (any, error) {
+	items := make([]json.RawMessage, len(tasks))
+	for i, t := range tasks {
+		raw, err := protojson.Marshal(t)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		b.Write(out)
+		items[i] = raw
 	}
-	return b.String(), nil
+	return map[string]any{"tasks": items}, nil
 }
 
-// rpcErr unwraps a gRPC status into a compact "Code: message" tool error, so
-// agents see the daemon's own diagnostic rather than gRPC transport framing.
+// rpcErr unwraps a connect error into a compact "code: message" tool error,
+// so agents see the daemon's own diagnostic rather than transport framing.
 func rpcErr(err error) error {
-	if st, ok := status.FromError(err); ok {
-		return fmt.Errorf("%s: %s", st.Code(), st.Message())
+	var cerr *connect.Error
+	if errors.As(err, &cerr) {
+		return fmt.Errorf("%s: %s", cerr.Code(), cerr.Message())
 	}
 	return err
 }

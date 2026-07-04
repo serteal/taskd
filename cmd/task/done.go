@@ -1,67 +1,65 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
-	taskcorev1 "todoapp/gen/taskcore/v1"
+	taskpb "todoapp/gen/task"
 )
 
 func newDoneCmd(a *app) *cobra.Command {
-	var reason string
-	cmd := &cobra.Command{
-		Use:   "done <id>...",
-		Short: "Complete items",
-		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return setCompleted(a, cmd, args, true, reason)
-		},
-	}
-	cmd.Flags().StringVar(&reason, "reason", "", `free-form completion reason ("wontdo", "gone", ...)`)
-	return cmd
-}
-
-func newReopenCmd(a *app) *cobra.Command {
 	return &cobra.Command{
-		Use:   "reopen <id>...",
-		Short: "Reopen completed items",
+		Use:   "done ID...",
+		Short: "Mark tasks completed",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return setCompleted(a, cmd, args, false, "")
+			return setCompleted(cmd.Context(), a, args, true)
 		},
 	}
 }
 
-func setCompleted(a *app, cmd *cobra.Command, ids []string, completed bool, reason string) error {
-	verb := "completed"
-	if !completed {
-		verb = "reopened"
+func newUndoneCmd(a *app) *cobra.Command {
+	return &cobra.Command{
+		Use:   "undone ID...",
+		Short: "Re-open completed tasks",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return setCompleted(cmd.Context(), a, args, false)
+		},
 	}
-	paths := []string{"todo.completed"}
-	if reason != "" {
-		paths = append(paths, "todo.completed_reason")
-	}
-	for _, id := range ids {
-		resp, err := a.client.Items().UpdateItem(cmd.Context(), &taskcorev1.UpdateItemRequest{
-			Id:         id,
-			UpdateMask: &fieldmaskpb.FieldMask{Paths: paths},
-			Item: &taskcorev1.Item{Todo: &taskcorev1.Todo{
-				Completed:       completed,
-				CompletedReason: reason,
-			}},
-		})
+}
+
+// setCompleted masks completed_time only: setting it completes the task,
+// leaving it unset under the mask re-opens it.
+func setCompleted(ctx context.Context, a *app, refs []string, done bool) error {
+	for _, ref := range refs {
+		t, err := resolveTask(ctx, a.client(), ref)
 		if err != nil {
-			return fmt.Errorf("%s: %w", id, err)
+			return err
 		}
-		if a.json {
-			if err := printProto(cmd.OutOrStdout(), resp.GetItem()); err != nil {
-				return err
-			}
-			continue
+		upd := &taskpb.Task{}
+		if done {
+			upd.CompletedTime = timestamppb.Now()
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s\n", verb, shortID(resp.GetItem().GetId()), itemTitle(resp.GetItem()))
+		res, err := a.client().UpdateTask(ctx, connect.NewRequest(&taskpb.UpdateTaskRequest{
+			Id:         t.GetId(),
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"completed_time"}},
+			Task:       upd,
+		}))
+		if err != nil {
+			return err
+		}
+		got := res.Msg.GetTask()
+		mark := "reopened"
+		if done {
+			mark = "done"
+		}
+		fmt.Fprintf(a.out, "%s %s %s\n", mark, shortID(got.GetId()), got.GetTitle())
 	}
 	return nil
 }

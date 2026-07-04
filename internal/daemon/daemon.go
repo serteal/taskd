@@ -1,288 +1,124 @@
-// Package daemon assembles and runs taskd: store + engine + hub + gRPC over
-// a unix socket with owner-only permissions. Localhost TCP is deliberately
-// not offered: it would be reachable by every process of every user on the
-// machine; the socket's file permissions are the security boundary.
+// Package daemon assembles taskd: store, TaskService handler, HTTP
+// listeners, and configured syncers. The server speaks Connect, gRPC, and
+// gRPC-Web on one port via h2c, so Go clients, browsers, and curl all use
+// the same address.
 package daemon
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
+	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
-	"google.golang.org/grpc"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 
-	pluginv1 "todoapp/gen/taskcore/plugin/v1"
-	taskcorev1 "todoapp/gen/taskcore/v1"
-	"todoapp/internal/clock"
-	"todoapp/internal/contrib"
-	"todoapp/internal/feed"
-	"todoapp/internal/intent"
-	"todoapp/internal/plugin"
-	"todoapp/internal/query"
-	"todoapp/internal/rules"
-	"todoapp/internal/schema"
-	"todoapp/internal/secret"
 	"todoapp/internal/server"
 	"todoapp/internal/store"
-	taskssync "todoapp/internal/sync"
+	"todoapp/internal/syncer"
+	"todoapp/pkg/client"
 )
 
-type Config struct {
-	// Dir holds the database and socket. Empty means DefaultDir().
+type Options struct {
+	// Dir is the data directory; "" resolves via Dir().
 	Dir string
-	// Retention bounds the event log; expired watch cursors resync.
-	// Zero means 30 days.
-	Retention time.Duration
-	// Clock and IDSeed are injectable for tests; zero values mean production
-	// behavior (system clock, crypto entropy).
-	Clock  clock.Clock
-	IDSeed int64
-	Log    *slog.Logger
+	// Listen overrides the config file's TCP address when non-empty.
+	Listen string
 }
 
-// DefaultDir is ~/.local/share/taskd, overridable with TASKD_DIR.
-func DefaultDir() string {
-	if v := os.Getenv("TASKD_DIR"); v != "" {
-		return v
+// Run serves until ctx is canceled, then shuts down gracefully.
+func Run(ctx context.Context, opts Options) error {
+	dir := opts.Dir
+	if dir == "" {
+		var err error
+		if dir, err = Dir(); err != nil {
+			return err
+		}
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".taskd"
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
 	}
-	return filepath.Join(home, ".local", "share", "taskd")
-}
-
-func SocketPath(dir string) string { return filepath.Join(dir, "taskd.sock") }
-func DBPath(dir string) string     { return filepath.Join(dir, "task.db") }
-func PidPath(dir string) string    { return filepath.Join(dir, "taskd.pid") }
-
-const trimInterval = 6 * time.Hour
-
-// Run serves until ctx is canceled. It refuses to start when another daemon
-// already listens on the socket.
-func Run(ctx context.Context, cfg Config) error {
-	if cfg.Dir == "" {
-		cfg.Dir = DefaultDir()
-	}
-	if cfg.Retention <= 0 {
-		cfg.Retention = 30 * 24 * time.Hour
-	}
-	if cfg.Clock == nil {
-		cfg.Clock = clock.System()
-	}
-	if cfg.Log == nil {
-		cfg.Log = slog.Default()
-	}
-	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
-		return fmt.Errorf("data dir: %w", err)
-	}
-
-	fileCfg, err := loadFileConfig(cfg.Dir)
+	cfg, err := loadFileConfig(dir)
 	if err != nil {
 		return err
 	}
-	if cfg.Retention <= 0 && fileCfg.Retention > 0 {
-		cfg.Retention = fileCfg.Retention
+	if opts.Listen != "" {
+		cfg.Listen = opts.Listen
 	}
 
-	eng, err := query.NewEngine(cfg.Clock.Now)
+	st, err := store.Open(ctx, filepath.Join(dir, "tasks.db"), nil)
 	if err != nil {
-		return fmt.Errorf("query engine: %w", err)
-	}
-	st, err := store.Open(store.Options{
-		Path:    DBPath(cfg.Dir),
-		Diff:    feed.Diff,
-		Extract: eng.Extract,
-		Now:     cfg.Clock.Now,
-	})
-	if err != nil {
-		return fmt.Errorf("store: %w", err)
+		return err
 	}
 	defer st.Close()
 
-	// The schema registry restores persisted manifests before anything
-	// queries: kinds outlive their plugins. The renderer receives their
-	// display contributions the same way.
-	renderer := contrib.NewRenderer(eng)
-	registry := schema.NewRegistry(st, eng, renderer)
-	if err := registry.Load(ctx); err != nil {
-		return err
-	}
+	mux := http.NewServeMux()
+	path, handler := server.New(st).Handler()
+	mux.Handle(path, handler)
+	// Health is transport-level, not part of the frozen proto API.
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintln(w, "ok")
+	})
 
-	if err := seedDefaultViews(ctx, st); err != nil {
-		return fmt.Errorf("seed views: %w", err)
-	}
+	httpSrv := &http.Server{Handler: h2c.NewHandler(mux, &http2.Server{})}
+	serveErr := make(chan error, 2)
 
-	sock := SocketPath(cfg.Dir)
-	// macOS caps sun_path at 104 bytes; fail with a real explanation instead
-	// of bind's opaque EINVAL.
-	if len(sock) > 100 {
-		return fmt.Errorf("socket path %q exceeds the unix socket path limit; use a shorter data dir (TASKD_DIR)", sock)
-	}
-	if conn, err := net.DialTimeout("unix", sock, 500*time.Millisecond); err == nil {
-		conn.Close()
-		return fmt.Errorf("daemon already running on %s", sock)
-	}
-	_ = os.Remove(sock) // stale socket from an unclean shutdown
-	ln, err := net.Listen("unix", sock)
+	tcpLn, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
-		return fmt.Errorf("listen: %w", err)
+		return fmt.Errorf("listen %s: %w", cfg.Listen, err)
 	}
-	if err := os.Chmod(sock, 0o600); err != nil {
-		ln.Close()
-		return fmt.Errorf("socket permissions: %w", err)
-	}
+	go func() { serveErr <- httpSrv.Serve(tcpLn) }()
+	log.Printf("taskd: listening on http://%s (data: %s)", cfg.Listen, dir)
 
-	// Pidfile for `task daemon stop`; the socket dial above already guards
-	// against double-starts, so this is informational plus signal target.
-	pidfile := PidPath(cfg.Dir)
-	if err := os.WriteFile(pidfile, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600); err != nil {
-		ln.Close()
-		return fmt.Errorf("pidfile: %w", err)
-	}
-	defer os.Remove(pidfile)
-
-	hub := feed.NewHub()
-	ids := clock.NewIDGen(cfg.Clock, cfg.IDSeed)
-
-	// The rules engine consumes the same feed as everything else, from its
-	// own durable cursor: rules fire whether a change came from the CLI, an
-	// agent, or a connector poll.
-	rulesEng := rules.NewEngine(st, hub, eng, cfg.Clock, cfg.Log)
-	go rulesEng.Run(ctx)
-
-	// The intent router + outbox worker: the one write path toward remotes.
-	// Rule intent actions dispatch fire-and-forget (wait 0) — the outbox
-	// owns delivery from there.
-	instances := plugin.NewRegistry()
-	router := intent.NewRouter(st, hub, cfg.Clock, ids, instances, cfg.Log)
-	go router.RunWorker(ctx)
-	rulesEng.SetIntentDispatch(func(ctx context.Context, itemID, name string) error {
-		_, err := router.Invoke(ctx, itemID, name, nil, 0)
-		return err
-	})
-
-	srv := server.New(server.Options{
-		Store: st, Hub: hub, Eng: eng, Clock: cfg.Clock, IDs: ids,
-		Kinds: registry.Kinds, Backfill: rulesEng.Backfill,
-		Intents: router, Dispatch: instances, Render: renderer,
-	})
-	g := grpc.NewServer()
-	srv.Register(g)
-
-	// Connector instances: plugin host + sync engine. A failing instance
-	// logs and is skipped — one bad plugin never takes the daemon down.
-	if len(fileCfg.Instances) > 0 {
-		secrets, err := secret.Open("", cfg.Dir)
+	if cfg.Socket != "" {
+		_ = os.Remove(cfg.Socket) // stale socket from an unclean exit
+		unixLn, err := net.Listen("unix", cfg.Socket)
 		if err != nil {
-			return fmt.Errorf("secret store: %w", err)
+			return fmt.Errorf("listen %s: %w", cfg.Socket, err)
 		}
-		host := plugin.NewHost(plugin.HostOptions{
-			RuntimeDir: filepath.Join(cfg.Dir, "run"),
-			Secrets:    secrets,
-			Log:        cfg.Log,
-			Clock:      cfg.Clock,
-		})
-		syncEng := taskssync.NewEngine(st, hub, cfg.Clock, ids, cfg.Log, 0)
-		for _, ic := range fileCfg.Instances {
-			inst, err := resolveInstance(cfg.Dir, ic)
-			if err != nil {
-				cfg.Log.Error("skipping instance", "err", err)
-				continue
-			}
-			go func() {
-				running, err := host.Start(ctx, inst, func(m *pluginv1.Manifest) error {
-					return registry.RegisterManifest(ctx, m)
-				})
-				if err != nil {
-					if ctx.Err() == nil {
-						cfg.Log.Error("instance failed to start", "instance", inst.Name, "err", err)
-					}
-					return
-				}
-				defer running.Stop()
-				instances.Add(inst.Name, running)
-				defer instances.Remove(inst.Name)
-				cfg.Log.Info("instance running", "instance", inst.Name,
-					"plugin", running.Manifest().GetName(), "poll", running.Poll())
-				syncEng.RunInstance(ctx, running.Source(), running.Poll())
-			}()
+		if err := os.Chmod(cfg.Socket, 0o600); err != nil {
+			return err
 		}
+		defer os.Remove(cfg.Socket)
+		go func() { serveErr <- httpSrv.Serve(unixLn) }()
+		log.Printf("taskd: listening on unix://%s", cfg.Socket)
 	}
 
-	// Retention: trim on start and periodically. Trimming never loses state
-	// (the log is derivable history); lagging watchers resync.
-	go func() {
-		t := time.NewTicker(trimInterval)
-		defer t.Stop()
-		for {
-			cutoff := cfg.Clock.Now().Add(-cfg.Retention)
-			if n, err := st.TrimEvents(ctx, cutoff); err != nil {
-				if ctx.Err() == nil {
-					cfg.Log.Warn("event trim failed", "err", err)
-				}
-			} else if n > 0 {
-				cfg.Log.Info("trimmed events", "count", n)
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-			}
+	// Syncers connect back through the public API like any other client.
+	tc := client.New("http://" + cfg.Listen)
+	for _, y := range cfg.Syncers {
+		scfg, err := y.toConfig()
+		if err != nil {
+			return err
 		}
-	}()
-
-	go func() {
-		<-ctx.Done()
-		g.GracefulStop()
-	}()
-
-	cfg.Log.Info("taskd serving", "socket", sock, "version", server.Version)
-	err = g.Serve(ln)
-	_ = os.Remove(sock)
-	if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-		return err
+		s, err := syncer.New(scfg)
+		if err != nil {
+			return err
+		}
+		go syncer.Run(ctx, s, scfg.Interval, tc)
+		log.Printf("taskd: syncer %s every %s", s.Source(), effectiveInterval(scfg.Interval))
 	}
-	return nil
+
+	select {
+	case <-ctx.Done():
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return httpSrv.Shutdown(shutdownCtx)
 }
 
-// seedDefaultViews creates the well-known views on first run only — they are
-// conventions, not schema, and the user may redefine or delete them.
-func seedDefaultViews(ctx context.Context, st store.Store) error {
-	defaults := []*taskcorev1.View{
-		{
-			Name:        "inbox",
-			Description: "Tracked items you have not triaged into todos yet",
-			Filter:      `!has(item.todo)`,
-			OrderBy:     "updated_at desc",
-		},
-		{
-			Name:        "today",
-			Description: "Due within 24h, or snoozed and now back",
-			Filter:      `!completed && ((has_due && due < now + duration("24h")) || (snoozed_until > timestamp("1970-01-01T00:00:01Z") && !snoozed))`,
-			OrderBy:     "due",
-		},
-		{
-			Name:        "completed",
-			Description: "The archive: everything done, links intact",
-			Filter:      `completed`,
-			OrderBy:     "updated_at desc",
-		},
+func effectiveInterval(d time.Duration) time.Duration {
+	if d <= 0 {
+		return syncer.DefaultInterval
 	}
-	for _, v := range defaults {
-		if _, err := st.GetView(ctx, v.GetName()); err == nil {
-			continue
-		} else if !errors.Is(err, store.ErrNotFound) {
-			return err
-		}
-		if err := st.SaveView(ctx, v); err != nil {
-			return err
-		}
-	}
-	return nil
+	return d
 }

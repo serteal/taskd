@@ -1,27 +1,48 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"strings"
 
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
-	taskcorev1 "todoapp/gen/taskcore/v1"
+	taskpb "todoapp/gen/task"
 )
 
 func newRmCmd(a *app) *cobra.Command {
-	return &cobra.Command{
-		Use:   "rm <id>",
-		Short: "Delete a native task (tracked items are completed, never deleted)",
-		Args:  cobra.ExactArgs(1),
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "rm ID...",
+		Short: "Delete tasks",
+		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The server refuses non-native items; its message explains why.
-			if _, err := a.client.Items().DeleteItem(cmd.Context(), &taskcorev1.DeleteItemRequest{Id: args[0]}); err != nil {
-				return err
-			}
-			if !a.json {
-				fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", shortID(args[0]))
+			ctx := cmd.Context()
+			in := bufio.NewReader(cmd.InOrStdin())
+			for _, ref := range args {
+				t, err := resolveTask(ctx, a.client(), ref)
+				if err != nil {
+					return err
+				}
+				if !force {
+					fmt.Fprintf(a.out, "delete %s? [y/N] ", t.GetTitle())
+					line, _ := in.ReadString('\n') // EOF reads as "no"
+					switch strings.ToLower(strings.TrimSpace(line)) {
+					case "y", "yes":
+					default:
+						fmt.Fprintf(a.out, "skipped %s\n", shortID(t.GetId()))
+						continue
+					}
+				}
+				if _, err := a.client().DeleteTask(ctx, connect.NewRequest(&taskpb.DeleteTaskRequest{Id: t.GetId()})); err != nil {
+					return err
+				}
+				fmt.Fprintf(a.out, "deleted %s %s\n", shortID(t.GetId()), t.GetTitle())
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "delete without confirmation")
+	return cmd
 }

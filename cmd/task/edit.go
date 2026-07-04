@@ -1,161 +1,110 @@
 package main
 
 import (
+	"errors"
 	"fmt"
-	"slices"
+	"sort"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	taskcorev1 "todoapp/gen/taskcore/v1"
+	taskpb "todoapp/gen/task"
 )
 
 func newEditCmd(a *app) *cobra.Command {
 	var (
-		title       string
-		note        string
-		project     string
-		due         string
-		clearDue    bool
-		snooze      string
-		clearSnooze bool
-		addLabels   []string
-		rmLabels    []string
+		title, notes, due       string
+		clearDue                bool
+		addLabels, removeLabels []string
 	)
 	cmd := &cobra.Command{
-		Use:   "edit <id>",
-		Short: "Edit todo fields; the field mask is built from the flags you set",
+		Use:   "edit ID",
+		Short: "Edit fields of a task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if due != "" && clearDue {
-				return fmt.Errorf("--due and --clear-due are mutually exclusive")
-			}
-			if snooze != "" && clearSnooze {
-				return fmt.Errorf("--snooze and --clear-snooze are mutually exclusive")
-			}
-
-			var paths []string
-			todo := &taskcorev1.Todo{}
-			now := time.Now()
-			if cmd.Flags().Changed("title") {
-				paths = append(paths, "todo.title_override")
-				todo.TitleOverride = title
-			}
-			if cmd.Flags().Changed("note") {
-				paths = append(paths, "todo.note")
-				todo.Note = note
-			}
-			if cmd.Flags().Changed("project") {
-				paths = append(paths, "todo.project")
-				todo.Project = project
-			}
-			if due != "" {
-				t, err := parseWhen(due, now)
-				if err != nil {
-					return fmt.Errorf("--due: %w", err)
-				}
-				paths = append(paths, "todo.due")
-				todo.Due = timestamppb.New(t)
-			}
-			if clearDue {
-				paths = append(paths, "todo.due") // nil value clears
-			}
-			if snooze != "" {
-				t, err := parseWhen(snooze, now)
-				if err != nil {
-					return fmt.Errorf("--snooze: %w", err)
-				}
-				paths = append(paths, "todo.snoozed_until")
-				todo.SnoozedUntil = timestamppb.New(t)
-			}
-			if clearSnooze {
-				paths = append(paths, "todo.snoozed_until")
-			}
-
-			labelEdit := len(addLabels) > 0 || len(rmLabels) > 0
-			if !labelEdit && len(paths) == 0 {
-				return fmt.Errorf("nothing to edit: set at least one flag (see `task edit --help`)")
-			}
-
 			ctx := cmd.Context()
-			items := a.client.Items()
-
-			if !labelEdit {
-				resp, err := items.UpdateItem(ctx, &taskcorev1.UpdateItemRequest{
-					Id:         args[0],
-					UpdateMask: &fieldmaskpb.FieldMask{Paths: paths},
-					Item:       &taskcorev1.Item{Todo: todo},
-				})
-				if err != nil {
-					return err
-				}
-				return editDone(a, cmd, resp.GetItem())
+			cur, err := resolveTask(ctx, a.client(), args[0])
+			if err != nil {
+				return err
 			}
 
-			// Label edits are read-modify-write on the full label list,
-			// guarded by expected_todo_revision; one retry on a concurrent
-			// write (Aborted).
-			paths = append(paths, "todo.labels")
-			for attempt := 0; ; attempt++ {
-				cur, err := items.GetItem(ctx, &taskcorev1.GetItemRequest{Id: args[0]})
-				if err != nil {
-					return err
-				}
-				it := cur.GetItem()
-				todo.Labels = editLabels(it.GetTodo().GetLabels(), addLabels, rmLabels)
-				resp, err := items.UpdateItem(ctx, &taskcorev1.UpdateItemRequest{
-					Id:                   it.GetId(),
-					UpdateMask:           &fieldmaskpb.FieldMask{Paths: paths},
-					Item:                 &taskcorev1.Item{Todo: todo},
-					ExpectedTodoRevision: it.GetTodoRevision(),
-				})
-				if status.Code(err) == codes.Aborted && attempt == 0 {
-					continue // concurrent write: re-read and retry once
-				}
-				if err != nil {
-					return err
-				}
-				return editDone(a, cmd, resp.GetItem())
+			// One masked write carrying only the touched paths, guarded by
+			// the revision we just read so a concurrent writer can't be
+			// silently overwritten.
+			upd := &taskpb.Task{}
+			var paths []string
+			if cmd.Flags().Changed("title") {
+				upd.Title = title
+				paths = append(paths, "title")
 			}
+			if cmd.Flags().Changed("notes") {
+				upd.Notes = notes
+				paths = append(paths, "notes")
+			}
+			switch {
+			case clearDue:
+				paths = append(paths, "due_time") // masked but unset clears
+			case cmd.Flags().Changed("due"):
+				t, err := parseWhen(due, time.Now())
+				if err != nil {
+					return err
+				}
+				upd.DueTime = timestamppb.New(t)
+				paths = append(paths, "due_time")
+			}
+			if len(addLabels)+len(removeLabels) > 0 {
+				upd.Labels = editLabels(cur.GetLabels(), addLabels, removeLabels)
+				paths = append(paths, "labels")
+			}
+			if len(paths) == 0 {
+				return errors.New("nothing to edit: pass at least one of --title, --notes, --due, --clear-due, --add-label, --remove-label")
+			}
+
+			res, err := a.client().UpdateTask(ctx, connect.NewRequest(&taskpb.UpdateTaskRequest{
+				Id:               cur.GetId(),
+				UpdateMask:       &fieldmaskpb.FieldMask{Paths: paths},
+				Task:             upd,
+				ExpectedRevision: cur.GetRevision(),
+			}))
+			if err != nil {
+				if connect.CodeOf(err) == connect.CodeAborted {
+					return errors.New("task changed underneath you; re-run")
+				}
+				return err
+			}
+			got := res.Msg.GetTask()
+			fmt.Fprintf(a.out, "%s %s\n", shortID(got.GetId()), got.GetTitle())
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&title, "title", "", "new title")
-	cmd.Flags().StringVar(&note, "note", "", "new note")
-	cmd.Flags().StringVarP(&project, "project", "p", "", "new project")
-	cmd.Flags().StringVar(&due, "due", "", "due WHEN")
+	cmd.Flags().StringVar(&notes, "notes", "", "new notes (empty clears)")
+	cmd.Flags().StringVar(&due, "due", "", "new due time (today, tomorrow, Nd, YYYY-MM-DD[ HH:MM])")
 	cmd.Flags().BoolVar(&clearDue, "clear-due", false, "remove the due date")
-	cmd.Flags().StringVar(&snooze, "snooze", "", "hide until WHEN")
-	cmd.Flags().BoolVar(&clearSnooze, "clear-snooze", false, "remove the snooze")
-	cmd.Flags().StringArrayVar(&addLabels, "add-label", nil, "add a label (repeatable)")
-	cmd.Flags().StringArrayVar(&rmLabels, "rm-label", nil, "remove a label (repeatable)")
+	cmd.Flags().StringArrayVar(&addLabels, "add-label", nil, "label to add (repeatable)")
+	cmd.Flags().StringArrayVar(&removeLabels, "remove-label", nil, "label to remove (repeatable)")
+	cmd.MarkFlagsMutuallyExclusive("due", "clear-due")
 	return cmd
 }
 
-// editLabels applies add/remove to the current labels, deduplicating while
-// preserving order.
-func editLabels(current, add, remove []string) []string {
-	out := []string{}
-	for _, l := range current {
-		if !slices.Contains(remove, l) && !slices.Contains(out, l) {
-			out = append(out, l)
-		}
+func editLabels(cur, add, remove []string) []string {
+	set := make(map[string]bool, len(cur)+len(add))
+	for _, l := range cur {
+		set[l] = true
 	}
 	for _, l := range add {
-		if !slices.Contains(remove, l) && !slices.Contains(out, l) {
-			out = append(out, l)
-		}
+		set[l] = true
 	}
+	for _, l := range remove {
+		delete(set, l)
+	}
+	out := make([]string, 0, len(set))
+	for l := range set {
+		out = append(out, l)
+	}
+	sort.Strings(out)
 	return out
-}
-
-func editDone(a *app, cmd *cobra.Command, it *taskcorev1.Item) error {
-	if a.json {
-		return printProto(cmd.OutOrStdout(), it)
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "edited %s %s\n", shortID(it.GetId()), itemTitle(it))
-	return nil
 }

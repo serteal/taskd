@@ -1,106 +1,197 @@
-// Package server implements the taskcore.v1 gRPC services on top of the
-// store, feed hub, and query engine. It owns all API semantics: layer
-// routing on writes, completion transitions, cursor expiry, and provenance.
+// Package server implements TaskService over the store: request validation,
+// error mapping, and change fan-out to watchers. It contains no domain logic
+// of its own — semantics live in the store, transport in the daemon.
 package server
 
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
+	"connectrpc.com/connect"
 
-	taskcorev1 "todoapp/gen/taskcore/v1"
-	"todoapp/internal/clock"
-	"todoapp/internal/contrib"
-	"todoapp/internal/feed"
-	"todoapp/internal/intent"
-	"todoapp/internal/query"
+	taskpb "todoapp/gen/task"
+	"todoapp/gen/task/taskconnect"
 	"todoapp/internal/store"
 )
 
-// Version is the daemon version, overridable at build time via
-// -ldflags "-X todoapp/internal/server.Version=...".
-var Version = "0.1.0-dev"
-
-// NativeKind is the kind of items created directly by users.
-const NativeKind = "task"
-
-// Options wires the server's collaborators. Store, Hub, Engine, Clock, and
-// IDs are required; the rest degrade gracefully when absent (tests wire
-// only what they exercise).
-type Options struct {
-	Store store.Store
-	Hub   *feed.Hub
-	Eng   *query.Engine
-	Clock clock.Clock
-	IDs   clock.IDGen
-	// Kinds is the schema registry's merged view (SchemaService).
-	Kinds func() []*taskcorev1.KindInfo
-	// Backfill is the rules engine's explicit level-apply (RuleService).
-	Backfill func(ctx context.Context, name string) (int, error)
-	// Intents is the outbox router (IntentService + mirror-path updates).
-	Intents *intent.Router
-	// Dispatch resolves remote refs for LinkItem (the plugin registry).
-	Dispatch intent.Dispatcher
-	// Render is the contribution renderer (core-side display rows).
-	Render *contrib.Renderer
+// updatablePaths are the UpdateTask mask paths; everything else on Task is
+// server-assigned (id, revision, timestamps) or syncer-owned (source,
+// external_ref, external_data) and is rejected, not ignored.
+var updatablePaths = map[string]struct{}{
+	"title":          {},
+	"notes":          {},
+	"labels":         {},
+	"due_time":       {},
+	"completed_time": {},
 }
 
 type Server struct {
-	st       store.Store
-	hub      *feed.Hub
-	eng      *query.Engine
-	clk      clock.Clock
-	ids      clock.IDGen
-	kinds    func() []*taskcorev1.KindInfo
-	backfill func(ctx context.Context, name string) (int, error)
-	intents  *intent.Router
-	dispatch intent.Dispatcher
-	render   *contrib.Renderer
+	st  *store.Store
+	hub *Hub
 }
 
-func New(o Options) *Server {
-	if o.Kinds == nil {
-		o.Kinds = func() []*taskcorev1.KindInfo { return nil }
+func New(st *store.Store) *Server {
+	return &Server{st: st, hub: NewHub()}
+}
+
+// Handler returns the mount path and HTTP handler for the service.
+func (s *Server) Handler() (string, http.Handler) {
+	return taskconnect.NewTaskServiceHandler(s)
+}
+
+var _ taskconnect.TaskServiceHandler = (*Server)(nil)
+
+func (s *Server) CreateTask(ctx context.Context, req *connect.Request[taskpb.CreateTaskRequest]) (*connect.Response[taskpb.CreateTaskResponse], error) {
+	t, err := s.st.Create(ctx, req.Msg.GetTitle(), req.Msg.GetNotes(), req.Msg.GetLabels(), req.Msg.GetDueTime())
+	if err != nil {
+		return nil, mapErr(err)
 	}
-	if o.Backfill == nil {
-		o.Backfill = func(context.Context, string) (int, error) {
-			return 0, errors.New("rules engine not running")
+	s.hub.PublishTask(t)
+	return connect.NewResponse(&taskpb.CreateTaskResponse{Task: t}), nil
+}
+
+func (s *Server) GetTask(ctx context.Context, req *connect.Request[taskpb.GetTaskRequest]) (*connect.Response[taskpb.GetTaskResponse], error) {
+	if req.Msg.GetId() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id is required"))
+	}
+	t, err := s.st.Get(ctx, req.Msg.GetId())
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return connect.NewResponse(&taskpb.GetTaskResponse{Task: t}), nil
+}
+
+func (s *Server) UpdateTask(ctx context.Context, req *connect.Request[taskpb.UpdateTaskRequest]) (*connect.Response[taskpb.UpdateTaskResponse], error) {
+	msg := req.Msg
+	if msg.GetId() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id is required"))
+	}
+	paths := msg.GetUpdateMask().GetPaths()
+	if len(paths) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("update_mask is required"))
+	}
+	for _, p := range paths {
+		if _, ok := updatablePaths[p]; !ok {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("path %q is not updatable (updatable: title, notes, labels, due_time, completed_time)", p))
 		}
 	}
-	if o.Render == nil {
-		o.Render = contrib.NewRenderer(o.Eng)
+	src := msg.GetTask()
+	t, err := s.st.Update(ctx, msg.GetId(), msg.GetExpectedRevision(), func(t *taskpb.Task) error {
+		for _, p := range paths {
+			switch p {
+			case "title":
+				t.Title = src.GetTitle()
+			case "notes":
+				t.Notes = src.GetNotes()
+			case "labels":
+				t.Labels = src.GetLabels()
+			case "due_time":
+				t.DueTime = src.GetDueTime()
+			case "completed_time":
+				t.CompletedTime = src.GetCompletedTime()
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, mapErr(err)
 	}
-	return &Server{
-		st: o.Store, hub: o.Hub, eng: o.Eng, clk: o.Clock, ids: o.IDs,
-		kinds: o.Kinds, backfill: o.Backfill, intents: o.Intents, dispatch: o.Dispatch,
-		render: o.Render,
-	}
+	s.hub.PublishTask(t)
+	return connect.NewResponse(&taskpb.UpdateTaskResponse{Task: t}), nil
 }
 
-// Register attaches all taskcore.v1 services to g.
-func (s *Server) Register(g *grpc.Server) {
-	taskcorev1.RegisterItemServiceServer(g, &itemService{s: s})
-	taskcorev1.RegisterViewServiceServer(g, &viewService{s: s})
-	taskcorev1.RegisterRuleServiceServer(g, &ruleService{s: s})
-	taskcorev1.RegisterIntentServiceServer(g, &intentService{s: s})
-	taskcorev1.RegisterSchemaServiceServer(g, &schemaService{s: s})
-	taskcorev1.RegisterAdminServiceServer(g, &adminService{s: s})
+func (s *Server) DeleteTask(ctx context.Context, req *connect.Request[taskpb.DeleteTaskRequest]) (*connect.Response[taskpb.DeleteTaskResponse], error) {
+	if req.Msg.GetId() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id is required"))
+	}
+	if err := s.st.Delete(ctx, req.Msg.GetId()); err != nil {
+		return nil, mapErr(err)
+	}
+	s.hub.PublishDeleted(req.Msg.GetId())
+	return connect.NewResponse(&taskpb.DeleteTaskResponse{}), nil
 }
 
-// clientProvenance builds the provenance for a write arriving over the
-// client API. The client self-identifies via the x-task-client metadata
-// header; provenance is an audit trail, not a security boundary.
-func clientProvenance(ctx context.Context) *taskcorev1.Provenance {
-	name := "unknown"
-	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		if v := md.Get("x-task-client"); len(v) > 0 && v[0] != "" {
-			name = v[0]
+func (s *Server) ListTasks(ctx context.Context, req *connect.Request[taskpb.ListTasksRequest]) (*connect.Response[taskpb.ListTasksResponse], error) {
+	msg := req.Msg
+	tasks, next, err := s.st.List(ctx, store.Page{
+		Filter:    msg.GetFilter(),
+		OrderBy:   msg.GetOrderBy(),
+		PageSize:  msg.GetPageSize(),
+		PageToken: msg.GetPageToken(),
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return connect.NewResponse(&taskpb.ListTasksResponse{Tasks: tasks, NextPageToken: next}), nil
+}
+
+func (s *Server) UpsertExternalTasks(ctx context.Context, req *connect.Request[taskpb.UpsertExternalTasksRequest]) (*connect.Response[taskpb.UpsertExternalTasksResponse], error) {
+	msg := req.Msg
+	res, err := s.st.UpsertExternal(ctx, msg.GetSource(), msg.GetTasks(), msg.GetApplyLabels(), msg.GetFullSnapshot())
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	for _, t := range res.Changed {
+		s.hub.PublishTask(t)
+	}
+	for _, id := range res.DeletedIDs {
+		s.hub.PublishDeleted(id)
+	}
+	return connect.NewResponse(&taskpb.UpsertExternalTasksResponse{
+		Created:   res.Created,
+		Updated:   res.Updated,
+		Unchanged: res.Unchanged,
+		Deleted:   res.Deleted,
+	}), nil
+}
+
+func (s *Server) WatchTasks(ctx context.Context, _ *connect.Request[taskpb.WatchTasksRequest], stream *connect.ServerStream[taskpb.WatchTasksResponse]) error {
+	ch, cancel := s.hub.Subscribe()
+	defer cancel()
+	// Empty handshake, sent after subscribing: it flushes response headers
+	// (without it the client's stream-open call blocks until the first real
+	// event) and tells the client the subscription is live, so a ListTasks
+	// issued after it cannot miss changes.
+	if err := stream.Send(&taskpb.WatchTasksResponse{}); err != nil {
+		return err
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case ev, ok := <-ch:
+			if !ok {
+				return connect.NewError(connect.CodeResourceExhausted,
+					errors.New("watcher fell behind; reconnect and refetch"))
+			}
+			if err := stream.Send(ev); err != nil {
+				return err
+			}
 		}
 	}
-	return &taskcorev1.Provenance{
-		Source: taskcorev1.ProvenanceSource_PROVENANCE_SOURCE_CLIENT,
-		Ref:    name,
+}
+
+func (s *Server) ListLabels(ctx context.Context, req *connect.Request[taskpb.ListLabelsRequest]) (*connect.Response[taskpb.ListLabelsResponse], error) {
+	labels, err := s.st.ListLabels(ctx, req.Msg.GetIncludeCompleted())
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return connect.NewResponse(&taskpb.ListLabelsResponse{Labels: labels}), nil
+}
+
+// mapErr translates store sentinels into Connect codes.
+func mapErr(err error) error {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, store.ErrRevisionMismatch):
+		return connect.NewError(connect.CodeAborted, err)
+	case errors.Is(err, store.ErrInvalid):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
 	}
 }

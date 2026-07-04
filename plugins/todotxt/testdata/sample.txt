@@ -1,7 +1,0 @@
-(A) call dentist +health @phone due:2026-07-10
-buy milk
-x 2026-06-30 2026-06-01 write report +work pri:C
-review the pr id:pr-42 @code
-# a comment line
-
-pay invoice due:2026-07-15 id:inv-1

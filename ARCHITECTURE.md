@@ -6,159 +6,171 @@ what exists.
 
 ## The one-sentence architecture
 
-A local Go daemon (`taskd`) owns a canonical store and exposes everything
-over gRPC on a unix socket; every other component — CLI, MCP server, web UI,
-and every plugin — is a gRPC peer, so extensibility is not a plugin API
-bolted on the side but the only way anything talks to the core.
+A Go daemon (`taskd`) owns a SQLite store and serves one Connect/gRPC
+service (`task.TaskService`); the CLI, the MCP server, the web frontend,
+and every integration are all just clients of that service.
 
 ## Layout
 
 ```
-proto/                          the contract (one buf module; breaking changes CI-gated)
-  taskcore/v1/                  CLIENT surface: item, event, intent, rule, view + 6 services
-  taskcore/plugin/v1/           PLUGIN surface: manifest/handshake, connector, corehost
-  taskcore/view/v1/             shared display vocabulary (DisplayValue, Presentation)
-  icsplugin/v1, todotxtplugin/v1  plugin-private extension types (in-repo for convenience;
-                                  the core never links them — they travel as descriptors)
-gen/                            generated Go, committed
-
-cmd/taskd                       the daemon
-cmd/task                        the CLI (also `task daemon run|start|stop|status`)
-cmd/task-mcp                    the agent frontend (stdio MCP server)
-
-internal/                       one package per engine:
-  clock/      injectable time + seeded ULIDs (determinism is a requirement, not a nicety)
-  store/      SQLite: items, event log, rules, outbox, views, manifests, meta KV;
-              every item mutation commits item + event in ONE transaction
-  feed/       the differ (edge detector, with a completeness guard that fails the
-              build when item.proto grows an uncovered field), BeforeImage (the
-              differ's exact inverse, lockstepped by a roundtrip property test),
-              and the watch hub
-  query/      CEL engine: filters with SQL pushdown, virtual fields (effective due
-              through per-kind facet bindings), dynamic type registration from
-              plugin descriptors
-  contrib/    contribution registry + core-side renderer — the single place
-              display expressions are evaluated
-  schema/     kind registry: persists manifests (kinds outlive plugins), enforces
-              additive-only type evolution, validates rule templates and
-              presentations at registration
-  sync/       reconciliation: snapshot diffing, tombstone grace → stale (never
-              delete), pinned-mirror refresh, relation wiring, value-based echo
-              silencing
-  rules/      edge-triggered rules: became/schedule triggers, provenance guards,
-              depth-capped cascades, durable cursor, explicit backfill
-  intent/     the write path: router + durable outbox (backoff retries, crash-safe
-              requeue, retry/discard); only remote-confirmed state touches mirrors
-  plugin/     subprocess host: spawn/handshake/supervise per instance, per-instance
-              corehost socket, live registry (the intent dispatch surface)
-  secret/     macOS keychain / file secret store (plugins own auth; this is the
-              optional opaque helper)
-  server/     the gRPC services — all API semantics live here
-  daemon/     assembly: 0600 socket, config.yaml, engine startup, retention
-
-pkg/taskclient                  client SDK (used by CLI and MCP; TUI/web next)
-pkg/taskplugin (+connectortest) plugin SDK + the conformance suite
-plugins/ics                     read-only ICS calendar connector (full recurrence)
-plugins/todotxt                 bidirectional todo.txt connector (the file is the remote)
+proto/task/task.proto     The entire public API, fully commented. Read this first.
+gen/task/                 Generated Go (protoc-gen-go + protoc-gen-connect-go).
+internal/store/           SQLite: schema, filters→SQL, keyset pagination, upsert.
+internal/server/          TaskService handlers + the watch fan-out hub.
+internal/daemon/          Assembly: config, listeners, syncer startup.
+internal/syncer/          Syncer loop + built-in syncers (ics).
+pkg/client/               Dials a taskd; the one place target resolution lives.
+cmd/taskd/                The daemon.
+cmd/task/                 The CLI.
+cmd/task-mcp/             MCP server for agents.
 ```
 
-## Dataflow: a closed loop
+Dependency direction: `cmd/* → pkg/client → gen/task` and
+`cmd/taskd → internal/daemon → internal/{server,store,syncer}`. Nothing
+outside `internal/store` touches SQL; nothing outside `internal/server`
+touches the store; syncers and all binaries speak only the public API.
 
-- **Mirrors flow one way**: remote → connector `Snapshot`/`Resolve` → sync
-  engine → store. Nothing else writes mirror fields.
-- **Intents flow the other way**: client/rule/agent → intent router → outbox
-  → connector `HandleIntent` → remote → confirmed state → mirror.
-- **Todos never leave the machine**; sync cannot touch them (separate
-  revision counters make cross-layer false conflicts impossible).
-- **One event feed**: every write appends an event (field-level old→new
-  values, provenance) that watchers, the rules engine, and frontends consume
-  from durable cursors.
+## Runtime
 
-## The public API
+`taskd` listens on `127.0.0.1:7517` (config `listen:`) and optionally a
+0600 unix socket (config `socket:`). One h2c port serves the Connect,
+gRPC, and gRPC-Web protocols simultaneously, plus `GET /healthz`. Data
+lives in `$TASKD_DIR` (default `~/.taskd`): `tasks.db` and `config.yaml`.
 
-### Client surface (`taskcore.v1`, gRPC over the unix socket)
+```yaml
+# ~/.taskd/config.yaml — everything optional
+listen: 127.0.0.1:7517
+socket: /Users/me/.taskd/taskd.sock
+syncers:
+  - type: ics
+    name: work            # task source becomes "ics:work"
+    url: https://example.com/cal.ics
+    interval: 15m
+    labels: [calendar]
+```
 
-| Service | Purpose |
+Clients resolve the daemon address from `TASKD_ADDR`
+(`http://host:port` or `unix:///path`), defaulting to
+`http://127.0.0.1:7517`.
+
+## The API
+
+`proto/task/task.proto` is the authority — every RPC and field is
+documented there. The shape:
+
+| RPC | Purpose |
 |---|---|
-| `ItemService` | CRUD; `QueryItems` (CEL filter, pagination, optional `RenderSpec` → server-rendered rows); `Watch` (resumable feed); `LinkItem` (attach-to-remote) |
-| `ViewService` | saved views CRUD; `ListPresentations` (merged display contributions) |
-| `RuleService` | rules CRUD; `DryRunRule`; `BackfillRule`; `ListRuleTemplates` |
-| `IntentService` | `InvokeIntent` (bounded-wait remote write); list/retry/discard the outbox |
-| `SchemaService` | kinds, facet bindings, and per-kind type descriptors (clients register them dynamically — no plugin linking, ever) |
-| `AdminService` | Ping (version/cursor handshake); online Backup |
+| `CreateTask` | New local task (title, notes, labels, due). |
+| `GetTask` / `DeleteTask` | By id. Delete is permanent. |
+| `UpdateTask` | Field-mask write over `title, notes, labels, due_time, completed_time`; optional `expected_revision` (mismatch ⇒ `ABORTED`). Completing = setting `completed_time`. |
+| `ListTasks` | Structured `TaskFilter` + `order_by` (`created`/`updated`/`due`/`title`, ` asc`/` desc`) + keyset pagination. |
+| `UpsertExternalTasks` | Syncer entry point: reconcile one source's tasks in a batch keyed `(source, external_ref)`. |
+| `WatchTasks` | Server stream of every change from now; no history. |
+| `ListLabels` | Distinct labels + counts, for filter chips. |
 
-Contract semantics beyond the RPC shapes:
+Error codes: `NOT_FOUND`, `ABORTED` (revision), `INVALID_ARGUMENT`
+(validation, bad order_by/page_token), `RESOURCE_EXHAUSTED` (watcher fell
+behind — reconnect and refetch).
 
-- An `Item` is a connector-owned `Mirror` plus a user-owned `Todo`. Core task
-  state is binary (todo/completed); all richer ontology is labels, projects,
-  rules, and views.
-- One `Update` touches one layer. `mirror.title` masks become rename intents
-  (the response's `intent` field reports CONFIRMED vs QUEUED). Everything
-  else on the mirror is read-only.
-- Item ids resolve by unique prefix on every RPC. Writes carry provenance
-  from the `x-task-client` metadata header.
-- `Watch` events carry field-level old→new values; an expired cursor fails
-  with `FAILED_PRECONDITION`/`CURSOR_EXPIRED` and the client resyncs via
-  `QueryItems` (the returned `cursor` makes snapshot-then-follow gapless).
-- The CEL environment (filters, rules, bindings, contributions): `item` plus
-  `completed, labels, project, kind, state, stale, title, due, has_due,
-  snoozed_until, snoozed, now` — `due` is the effective due (user override,
-  else the kind's facet binding).
-- Standard intents: `rename, add_comment, delete, set_due, set_start,
-  assign, set_priority, set_completed`.
+The live-view protocol: open `WatchTasks` and await the first message — an
+**empty handshake** confirming the subscription is live — then `ListTasks`,
+then apply events, using `revision` to discard events older than the
+snapshot. Ignore any watch message whose `change` is unset or unrecognized
+(the handshake today; new change kinds tomorrow). Any stream drop ⇒
+reconnect and refetch. There is no cursor to manage.
 
-### Plugin surface (`taskcore.plugin.v1`)
+## Writing a client
 
-The host runs one process per connector instance with two env vars:
-`TASKPLUGIN_SOCKET` (the plugin serves `PluginService` + `ConnectorService`
-here) and `TASKPLUGIN_COREHOST_SOCKET` (the core serves the least-privilege
-corehost API here — currently the keychain-backed `SecretService`,
-namespaced per instance). The **manifest is the whole integration**: kinds +
-facet bindings + typed extension descriptors + rule templates + display
-presentations, all validated at registration and persisted so items stay
-readable after a plugin is gone. Connectors declare SNAPSHOT or INCREMENTAL
-enumeration and which intents they handle per kind; they own translation and
-identity, never reconciliation.
+**Go** — use `pkg/client`:
 
-### Go SDKs
+```go
+tc := client.New(client.Target())
+res, err := tc.CreateTask(ctx, connect.NewRequest(&taskpb.CreateTaskRequest{
+    Title:  "Ship the demo",
+    Labels: []string{"p1", "project:launch"},
+}))
+```
 
-- `pkg/taskclient`: `Dial` (provenance attached), `QueryAll` (pagination),
-  `WatchItems` (the resync loop, written once), `SyncTypes` (register plugin
-  descriptors so protojson of extension payloads works clientside).
-- `pkg/taskplugin`: implement `Connector` (+ optional `Resolver`,
-  `IntentHandler`), call `Serve`; `DescriptorSet` builds manifest type sets;
-  `connectortest.RunConformance` is the behavioral contract every connector
-  must pass.
+**TypeScript (web)** — generate from the same protos with
+[`connect-es`](https://connectrpc.com/docs/web/getting-started) and point a
+transport at the daemon URL. The daemon already speaks gRPC-Web on its one
+port; no proxy, no gateway, no REST shim.
 
-Non-Go clients and plugins speak the protos directly.
+**curl** — Connect's JSON encoding works everywhere:
 
-## How it's used
+```sh
+curl -s http://127.0.0.1:7517/task.TaskService/ListTasks \
+  -H 'content-type: application/json' \
+  -d '{"filter": {"labelsAll": ["p1"], "completed": false}}'
+```
 
-- **Person, via CLI**: `task daemon start`, `add/ls/done/edit/watch`,
-  connectors via `$TASKD_DIR/config.yaml` + a binary in `plugins/`, rules
-  via `task rule apply -f rules.yaml`, remote writes via `task rename` /
-  `task pending` / `task retry`, attach via `task link`.
-- **Agent, via MCP**: `task-mcp` exposes tools that teach the filter
-  language, views as resources, typed items for plugin kinds, and refuses
-  destructive intents unless allowlisted (`TASKMCP_ALLOW_DESTRUCTIVE`).
-- **Plugin author**: 2–3 SDK interfaces + a manifest; the todotxt connector
-  is a complete bidirectional reference at ~550 lines plus a parser.
-- **Frontend author**: dial `taskclient`, query with a `RenderSpec`, paint
-  `DisplayValue`s (semantic tones, never widgets), stay live via `WatchItems`,
-  discover per-kind columns via `ListPresentations`. Frontends never
-  evaluate expressions and never talk to plugins.
+Client rules (the compatibility contract, enforced by convention until the
+freeze):
 
-## Invariants that must survive any change
+1. Ignore fields you don't recognize; never fail on them.
+2. Treat labels as opaque strings. Prefix conventions (`project:`, `p1`,
+   `agent:`) are UI sugar, resolved at render time.
+3. Send `expected_revision` when editing something a user has been staring
+   at; handle `ABORTED` by refetch-and-retry or asking the user.
+4. Recover watch streams by refetching, not by resuming.
 
-1. Mirrors hold only remote-confirmed truth; todos are user-only. No code
-   crosses that line — it is why there is no conflict engine.
-2. The event log and item state commit atomically; the differ and
-   `BeforeImage` stay exact inverses (guarded by tests).
-3. `taskcore/*/v1` protos evolve additively; buf breaking-change checks run
-   against `main` in CI.
-4. Plugin schemas evolve additively (registration gate); a genuinely new
-   shape is a new kind.
-5. Everything reads the injectable clock; nothing calls `time.Now` in engine
-   code paths.
-6. Destructive remote effects ride explicit, confirmable paths — never
-   generic CRUD, never sync, and never agents by default.
+## Writing a syncer
+
+A syncer mirrors an external system into tasks. It is an ordinary API
+client — the built-in ones run inside the daemon only for convenience and
+use zero private hooks. The loop:
+
+1. Fetch your source's state (a calendar, your review queue, a tracker).
+2. Convert each item to an `ExternalTask{external_ref, title, due_time,
+   completed_time, external_data}`.
+3. `UpsertExternalTasks(source, batch, apply_labels, full_snapshot)`.
+
+That's the whole contract. The server handles create/update/unchanged
+detection and — with `full_snapshot` — pruning of items that vanished from
+the source. Field ownership does the rest: your batch owns
+title/due/completed/external_data; the user's labels and notes survive
+every sync. Put anything you want frontends to *display* in
+`external_data`; lift anything you want users to *filter on* into a label
+via `apply_labels` (or per-task refs → separate sources).
+
+Built-in syncers implement `internal/syncer.Syncer` and register in
+`builders`; out-of-process syncers just link `pkg/client` (or any gRPC
+stack in any language) and run on their own schedule.
+
+## Storage
+
+Column-mapped SQLite, WAL, single writer. Timestamps are unix
+milliseconds; proto timestamps are truncated to ms on write.
+
+```
+tasks(id PK, title, notes, due_ms?, completed_ms?, source, external_ref,
+      external_data JSON, revision, created_ms, updated_ms)
+task_labels(task_id → tasks ON DELETE CASCADE, label; PK(task_id, label))
+```
+
+Unique partial index on `(source, external_ref)` where source ≠ ''.
+Every `TaskFilter` dimension maps to an index or a `task_labels` join; text
+search is `LIKE` over title+notes (FTS5 is the designated upgrade).
+Pagination is keyset (`ORDER BY sortkey, id` + comparison against the
+token's last-row keys); tokens embed the order and are rejected on
+mismatch. `OFFSET` does not appear in the codebase.
+
+## Invariants
+
+See DESIGN.md §9. The load-bearing ones for contributors: revision bumps by
+exactly 1 per write; only upserts write source-owned fields and only user
+RPCs write labels/notes; `full_snapshot` pruning cannot touch local tasks;
+the store never interprets `external_data`; watch events carry full state.
+
+## Development
+
+```sh
+make generate   # buf generate (protoc-gen-go, protoc-gen-connect-go)
+make test       # go test -race ./...
+make lint       # buf lint, gofmt, go vet
+make build      # taskd, task, task-mcp
+```
+
+Proto changes: edit `proto/task/task.proto`, `make generate`, fix
+compile errors. Pre-freeze that's the whole process; post-freeze, changes
+must be additive (see DESIGN.md §3).

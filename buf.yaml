@@ -4,6 +4,7 @@ modules:
 lint:
   use:
     - STANDARD
-breaking:
-  use:
-    - FILE
+  except:
+    # Deliberate: the API is unversioned (package "task", no v1). It is
+    # meant to be frozen and then evolved additively, never re-versioned.
+    - PACKAGE_VERSION_SUFFIX

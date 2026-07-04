@@ -5,61 +5,47 @@ import (
 	"strings"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	taskcorev1 "todoapp/gen/taskcore/v1"
+	taskpb "todoapp/gen/task"
 )
 
 func newAddCmd(a *app) *cobra.Command {
 	var (
-		project string
-		labels  []string
-		due     string
-		snooze  string
-		note    string
+		labels []string
+		notes  string
+		due    string
 	)
 	cmd := &cobra.Command{
-		Use:   "add <title>",
-		Short: "Create a native task",
+		Use:   "add TITLE...",
+		Short: "Create a task",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			todo := &taskcorev1.Todo{
-				TitleOverride: strings.Join(args, " "),
-				Project:       project,
-				Labels:        labels,
-				Note:          note,
+			req := &taskpb.CreateTaskRequest{
+				Title:  strings.Join(args, " "),
+				Notes:  notes,
+				Labels: labels,
 			}
-			now := time.Now()
 			if due != "" {
-				t, err := parseWhen(due, now)
+				t, err := parseWhen(due, time.Now())
 				if err != nil {
-					return fmt.Errorf("--due: %w", err)
+					return err
 				}
-				todo.Due = timestamppb.New(t)
+				req.DueTime = timestamppb.New(t)
 			}
-			if snooze != "" {
-				t, err := parseWhen(snooze, now)
-				if err != nil {
-					return fmt.Errorf("--snooze: %w", err)
-				}
-				todo.SnoozedUntil = timestamppb.New(t)
-			}
-			resp, err := a.client.Items().CreateItem(cmd.Context(), &taskcorev1.CreateItemRequest{Todo: todo})
+			res, err := a.client().CreateTask(cmd.Context(), connect.NewRequest(req))
 			if err != nil {
 				return err
 			}
-			if a.json {
-				return printProto(cmd.OutOrStdout(), resp.GetItem())
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "added %s %s\n", shortID(resp.GetItem().GetId()), itemTitle(resp.GetItem()))
+			created := res.Msg.GetTask()
+			fmt.Fprintf(a.out, "%s %s\n", shortID(created.GetId()), created.GetTitle())
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&project, "project", "p", "", "project path, e.g. work/reviews")
-	cmd.Flags().StringArrayVarP(&labels, "label", "l", nil, "label (repeatable)")
-	cmd.Flags().StringVar(&due, "due", "", "due WHEN (RFC3339, YYYY-MM-DD, today, tomorrow, 3d, 12h)")
-	cmd.Flags().StringVar(&snooze, "snooze", "", "hide until WHEN")
-	cmd.Flags().StringVar(&note, "note", "", "free-form note")
+	cmd.Flags().StringArrayVarP(&labels, "label", "l", nil, "label to attach (repeatable)")
+	cmd.Flags().StringVar(&notes, "notes", "", "free-form notes")
+	cmd.Flags().StringVar(&due, "due", "", "due time (today, tomorrow, Nd, YYYY-MM-DD[ HH:MM])")
 	return cmd
 }

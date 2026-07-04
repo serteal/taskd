@@ -5,5 +5,3 @@
 *.db-wal
 *.db-shm
 dist/
-task-plugin-ics
-task-plugin-todotxt
