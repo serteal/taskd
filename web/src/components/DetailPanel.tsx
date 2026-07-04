@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Task } from "../gen/task/task_pb";
 import { useStore } from "../lib/hooks";
 import { fmtStamp, shortId, toLocalInput, tsDate } from "../lib/format";
+import { buildAPI, registry } from "../lib/extensions";
 import { Chip } from "./Chip";
 
 // Field edits save individually (blur/Enter) with the task's revision as
@@ -30,6 +31,8 @@ export function DetailPanel({ task, onClose }: { task: Task; onClose: () => void
   const refIsURL = /^https?:\/\//.test(task.externalRef);
   const data = task.externalData ?? {};
   const dataEntries = Object.entries(data);
+  const presenter = registry.presenterFor(task);
+  const api = useMemo(() => buildAPI(store), [store]);
 
   return (
     <div className="flex h-full w-[340px] shrink-0 flex-col border-l border-line bg-surface">
@@ -135,7 +138,13 @@ export function DetailPanel({ task, onClose }: { task: Task; onClose: () => void
           />
         </div>
 
-        {dataEntries.length > 0 && (
+        {presenter?.DetailSection && (
+          <div>
+            <presenter.DetailSection task={task} api={api} />
+          </div>
+        )}
+
+        {dataEntries.length > 0 && !presenter?.DetailSection && (
           <div>
             <FieldLabel>{task.source} data</FieldLabel>
             <dl className="space-y-1 rounded border border-line bg-paper p-2 font-mono text-[11px]">

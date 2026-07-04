@@ -306,6 +306,71 @@ func TestUpsertExternalAndLabels(t *testing.T) {
 	}
 }
 
+// TestUserDataOwnership: user_data is user-owned — writable through the
+// mask, invisible to sync, and it survives upserts that rewrite every
+// source-owned field.
+func TestUserDataOwnership(t *testing.T) {
+	tc, _ := newTestStack(t)
+	ctx := context.Background()
+
+	_, err := tc.UpsertExternalTasks(ctx, connect.NewRequest(&taskpb.UpsertExternalTasksRequest{
+		Source: "github",
+		Tasks:  []*taskpb.ExternalTask{{ExternalRef: "org/repo#1", Title: "Fix the bug"}},
+	}))
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	src := "github"
+	list, err := tc.ListTasks(ctx, connect.NewRequest(&taskpb.ListTasksRequest{
+		Filter: &taskpb.TaskFilter{Source: &src},
+	}))
+	if err != nil || len(list.Msg.GetTasks()) != 1 {
+		t.Fatalf("list: %v err=%v", list, err)
+	}
+	id := list.Msg.GetTasks()[0].GetId()
+
+	tb, _ := structpb.NewStruct(map[string]any{
+		"timebox": map[string]any{"start": "2026-07-06T10:00:00Z", "end": "2026-07-06T11:00:00Z"},
+	})
+	upd, err := tc.UpdateTask(ctx, connect.NewRequest(&taskpb.UpdateTaskRequest{
+		Id:         id,
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"user_data"}},
+		Task:       &taskpb.Task{UserData: tb},
+	}))
+	if err != nil || upd.Msg.GetTask().GetUserData().GetFields()["timebox"] == nil {
+		t.Fatalf("set user_data: %v, task=%v", err, upd.Msg.GetTask())
+	}
+
+	// The source rewrites its fields; the user's timebox must survive.
+	_, err = tc.UpsertExternalTasks(ctx, connect.NewRequest(&taskpb.UpsertExternalTasksRequest{
+		Source: "github",
+		Tasks:  []*taskpb.ExternalTask{{ExternalRef: "org/repo#1", Title: "Fix the bug (retitled)"}},
+	}))
+	if err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	got, err := tc.GetTask(ctx, connect.NewRequest(&taskpb.GetTaskRequest{Id: id}))
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Msg.GetTask().GetTitle() != "Fix the bug (retitled)" {
+		t.Errorf("title not source-owned: %q", got.Msg.GetTask().GetTitle())
+	}
+	if got.Msg.GetTask().GetUserData().GetFields()["timebox"] == nil {
+		t.Errorf("user_data clobbered by sync: %v", got.Msg.GetTask().GetUserData())
+	}
+
+	// Masking user_data with no value clears it.
+	upd, err = tc.UpdateTask(ctx, connect.NewRequest(&taskpb.UpdateTaskRequest{
+		Id:         id,
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"user_data"}},
+		Task:       &taskpb.Task{},
+	}))
+	if err != nil || upd.Msg.GetTask().GetUserData() != nil {
+		t.Fatalf("clear user_data: %v, got %v", err, upd.Msg.GetTask().GetUserData())
+	}
+}
+
 func hasLabel(t *taskpb.Task, want string) bool {
 	for _, l := range t.GetLabels() {
 		if l == want {

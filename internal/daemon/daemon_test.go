@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -17,26 +18,39 @@ import (
 )
 
 // TestDaemonEndToEnd boots the real daemon — config file, TCP + unix
-// listeners, an ICS syncer against a fixture file — and drives it through
-// the public API only.
+// listeners, and an extension whose syncer is a shell script that talks
+// back through the public JSON API — and drives it from outside only.
 func TestDaemonEndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "taskd.sock")
 	addr := freeAddr(t)
 
-	// A calendar with one event tomorrow: the syncer should import it soon
-	// after boot (interval only schedules re-syncs; the first sync is
-	// immediate).
-	ics := fmt.Sprintf("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//t//EN\r\nBEGIN:VEVENT\r\nUID:ev-1\r\nDTSTART:%s\r\nDTEND:%s\r\nSUMMARY:Dentist\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
-		time.Now().Add(24*time.Hour).UTC().Format("20060102T150405Z"),
-		time.Now().Add(25*time.Hour).UTC().Format("20060102T150405Z"))
-	icsPath := filepath.Join(dir, "cal.ics")
-	if err := os.WriteFile(icsPath, []byte(ics), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := fmt.Sprintf("socket: %s\nsyncers:\n  - type: ics\n    name: test\n    path: %s\n    interval: 1h\n    labels: [calendar]\n", sock, icsPath)
+	cfg := fmt.Sprintf("socket: %s\n", sock)
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
+	}
+
+	// A complete extension: a syncer (curl over Connect's JSON protocol —
+	// proving a syncer can be anything) and a web half served at /ext/.
+	extDir := filepath.Join(dir, "extensions", "mock")
+	if err := os.MkdirAll(filepath.Join(extDir, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name": "mock", "syncer": ["/bin/sh", "./sync.sh"], "web": true}`
+	sync := `#!/bin/sh
+curl -s -X POST "$TASKD_ADDR/task.TaskService/UpsertExternalTasks" \
+  -H 'content-type: application/json' \
+  -d '{"source":"mock:test","tasks":[{"externalRef":"m1","title":"Mock synced"}],"applyLabels":["mock"],"fullSnapshot":true}' >/dev/null
+exec sleep 300
+`
+	for name, content := range map[string]string{
+		"manifest.json": manifest,
+		"sync.sh":       sync,
+		"web/main.js":   "export default { name: 'mock', register() {} };\n",
+	} {
+		if err := os.WriteFile(filepath.Join(extDir, name), []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -70,8 +84,8 @@ func TestDaemonEndToEnd(t *testing.T) {
 		t.Fatalf("GetTask over unix socket: %v, %v", got, err)
 	}
 
-	// The syncer's first pass lands the calendar event as a synced task.
-	source := "ics:test"
+	// The supervised syncer lands its task through the public API.
+	source := "mock:test"
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		res, err := tc.ListTasks(ctx, connect.NewRequest(&taskpb.ListTasksRequest{
@@ -82,16 +96,44 @@ func TestDaemonEndToEnd(t *testing.T) {
 		}
 		if tasks := res.Msg.GetTasks(); len(tasks) == 1 {
 			tk := tasks[0]
-			if tk.GetTitle() != "Dentist" || len(tk.GetLabels()) != 1 || tk.GetLabels()[0] != "calendar" {
+			if tk.GetTitle() != "Mock synced" || len(tk.GetLabels()) != 1 || tk.GetLabels()[0] != "mock" {
 				t.Fatalf("synced task = %v", tk)
 			}
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("ICS syncer never imported the event")
+			t.Fatalf("extension syncer never imported the task")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+
+	// The web half is discoverable and served — and ONLY web/ is served.
+	if body := httpGet(t, "http://"+addr+"/ext/index.json"); body != `[{"name":"mock"}]` {
+		t.Errorf("/ext/index.json = %s", body)
+	}
+	if body := httpGet(t, "http://"+addr+"/ext/mock/main.js"); body == "" {
+		t.Errorf("extension bundle not served")
+	}
+	if res, err := http.Get("http://" + addr + "/ext/mock/sync.sh"); err != nil || res.StatusCode != http.StatusNotFound {
+		t.Errorf("extension non-web files must not be served (got %v %v)", res.StatusCode, err)
+	}
+}
+
+func httpGet(t *testing.T, url string) string {
+	t.Helper()
+	res, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s: %d", url, res.StatusCode)
+	}
+	b, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func freeAddr(t *testing.T) string {

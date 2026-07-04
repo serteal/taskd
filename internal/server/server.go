@@ -25,6 +25,7 @@ var updatablePaths = map[string]struct{}{
 	"labels":         {},
 	"due_time":       {},
 	"completed_time": {},
+	"user_data":      {},
 }
 
 type Server struct {
@@ -75,7 +76,7 @@ func (s *Server) UpdateTask(ctx context.Context, req *connect.Request[taskpb.Upd
 	for _, p := range paths {
 		if _, ok := updatablePaths[p]; !ok {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
-				fmt.Errorf("path %q is not updatable (updatable: title, notes, labels, due_time, completed_time)", p))
+				fmt.Errorf("path %q is not updatable (updatable: title, notes, labels, due_time, completed_time, user_data)", p))
 		}
 	}
 	src := msg.GetTask()
@@ -92,6 +93,8 @@ func (s *Server) UpdateTask(ctx context.Context, req *connect.Request[taskpb.Upd
 				t.DueTime = src.GetDueTime()
 			case "completed_time":
 				t.CompletedTime = src.GetCompletedTime()
+			case "user_data":
+				t.UserData = src.GetUserData()
 			}
 		}
 		return nil

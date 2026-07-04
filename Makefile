@@ -1,7 +1,7 @@
 GOBIN := $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
-.PHONY: generate generate-web lint test test-web build build-web web fmt
+.PHONY: generate generate-web lint test test-web build build-web web extensions fmt
 
 generate: ## regenerate Go from protos (requires buf, protoc-gen-go, protoc-gen-connect-go)
 	buf generate
@@ -11,7 +11,7 @@ generate-web: ## regenerate TypeScript from protos (requires web/node_modules)
 
 lint:
 	buf lint
-	test -z "$$(gofmt -l cmd internal pkg 2>/dev/null)"
+	test -z "$$(gofmt -l cmd internal pkg extensions 2>/dev/null)"
 	go vet ./...
 
 test:
@@ -25,6 +25,9 @@ build:
 	go build -o task ./cmd/task
 	go build -o task-mcp ./cmd/task-mcp
 
+extensions: ## build the in-tree reference extensions' syncer binaries
+	go build -o extensions/ics/task-sync-ics ./extensions/ics
+
 web: ## build the web UI bundle into internal/webui/dist
 	cd web && npm install && npm run build
 
@@ -34,4 +37,4 @@ build-web: web ## build taskd with the web UI embedded
 	go build -o task-mcp ./cmd/task-mcp
 
 fmt:
-	gofmt -w cmd internal pkg 2>/dev/null || true
+	gofmt -w cmd internal pkg extensions 2>/dev/null || true

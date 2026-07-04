@@ -1,0 +1,4 @@
+{
+  "name": "ics",
+  "syncer": ["./task-sync-ics"]
+}

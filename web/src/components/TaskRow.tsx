@@ -1,5 +1,6 @@
 import type { Task } from "../gen/task/task_pb";
 import { humanDue, tsDate } from "../lib/format";
+import { registry } from "../lib/extensions";
 import { Chip } from "./Chip";
 
 const toneClass: Record<string, string> = {
@@ -31,6 +32,7 @@ export function TaskRow({
 }) {
   const due = tsDate(task.dueTime);
   const dueInfo = due ? humanDue(due, now) : undefined;
+  const meta = registry.presenterFor(task)?.rowMeta?.(task) ?? {};
 
   return (
     <div
@@ -63,16 +65,23 @@ export function TaskRow({
           checked ? "text-mute line-through" : ""
         }`}
       >
+        {meta.icon && <span className="mr-1.5">{meta.icon}</span>}
         {task.title}
+        {meta.subtitle && (
+          <span className="ml-2 font-mono text-[11px] text-faint">{meta.subtitle}</span>
+        )}
       </span>
 
-      {task.source !== "" && (
+      {task.source !== "" && !meta.subtitle && (
         <span className="hidden shrink-0 rounded-sm border border-line px-1 font-mono text-[10px] text-mute sm:inline">
           {task.source}
         </span>
       )}
 
       <span className="hidden shrink-0 gap-1 sm:flex">
+        {(meta.extraChips ?? []).map((l) => (
+          <Chip key={`x-${l}`} label={l} />
+        ))}
         {task.labels.slice(0, 3).map((l) => (
           <Chip key={l} label={l} />
         ))}
@@ -81,10 +90,16 @@ export function TaskRow({
         )}
       </span>
 
-      {dueInfo && (
-        <span className={`w-[72px] shrink-0 text-right font-mono text-[11px] ${toneClass[dueInfo.tone]}`}>
-          {dueInfo.text}
+      {meta.timeText ? (
+        <span className="w-[88px] shrink-0 text-right font-mono text-[11px] text-mute">
+          {meta.timeText}
         </span>
+      ) : (
+        dueInfo && (
+          <span className={`w-[88px] shrink-0 text-right font-mono text-[11px] ${toneClass[dueInfo.tone]}`}>
+            {dueInfo.text}
+          </span>
+        )
       )}
     </div>
   );

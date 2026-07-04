@@ -57,6 +57,7 @@ var schema = []string{
 		source         TEXT NOT NULL DEFAULT '',
 		external_ref   TEXT NOT NULL DEFAULT '',
 		external_data  TEXT,
+		user_data      TEXT,
 		revision       INTEGER NOT NULL,
 		created_ms     INTEGER NOT NULL,
 		updated_ms     INTEGER NOT NULL
@@ -95,6 +96,14 @@ func Open(ctx context.Context, path string, now func() time.Time) (*Store, error
 			return nil, fmt.Errorf("apply schema: %w", err)
 		}
 	}
+	// Columns added after the initial schema; "duplicate column" just means
+	// the database is current. (Pre-freeze development convenience, not a
+	// migration framework.)
+	if _, err := db.ExecContext(ctx, "ALTER TABLE tasks ADD COLUMN user_data TEXT"); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("add user_data column: %w", err)
+	}
 	return &Store{db: db, now: now}, nil
 }
 
@@ -110,7 +119,7 @@ type querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-const taskColumns = "id, title, notes, due_ms, completed_ms, source, external_ref, external_data, revision, created_ms, updated_ms"
+const taskColumns = "id, title, notes, due_ms, completed_ms, source, external_ref, external_data, user_data, revision, created_ms, updated_ms"
 
 // taskRow mirrors one tasks row; labels live in task_labels.
 type taskRow struct {
@@ -122,6 +131,7 @@ type taskRow struct {
 	source       string
 	externalRef  string
 	externalData sql.NullString
+	userData     sql.NullString
 	revision     int64
 	createdMs    int64
 	updatedMs    int64
@@ -129,11 +139,15 @@ type taskRow struct {
 
 func (r *taskRow) scan(s interface{ Scan(dest ...any) error }) error {
 	return s.Scan(&r.id, &r.title, &r.notes, &r.dueMs, &r.completedMs,
-		&r.source, &r.externalRef, &r.externalData, &r.revision, &r.createdMs, &r.updatedMs)
+		&r.source, &r.externalRef, &r.externalData, &r.userData, &r.revision, &r.createdMs, &r.updatedMs)
 }
 
 func (r *taskRow) proto(labels []string) (*taskpb.Task, error) {
 	data, err := unmarshalStruct(r.externalData)
+	if err != nil {
+		return nil, err
+	}
+	userData, err := unmarshalStruct(r.userData)
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +161,7 @@ func (r *taskRow) proto(labels []string) (*taskpb.Task, error) {
 		Source:        r.source,
 		ExternalRef:   r.externalRef,
 		ExternalData:  data,
+		UserData:      userData,
 		Revision:      uint64(r.revision),
 		CreateTime:    msTS(r.createdMs),
 		UpdateTime:    msTS(r.updatedMs),
@@ -310,9 +325,9 @@ func (s *Store) Get(ctx context.Context, id string) (*taskpb.Task, error) {
 }
 
 // Update applies mutate to the current state of the task in a transaction and
-// persists the user-mutable fields: title, notes, labels, due_time, and
-// completed_time. Mutations of id, source, external_ref, external_data,
-// create_time, and revision are ignored. A nonzero expectedRevision that
+// persists the user-mutable fields: title, notes, labels, due_time,
+// completed_time, and user_data. Mutations of id, source, external_ref,
+// external_data, create_time, and revision are ignored. A nonzero expectedRevision that
 // differs from the stored revision fails with ErrRevisionMismatch before
 // mutate runs; errors returned by mutate propagate unwrapped.
 func (s *Store) Update(ctx context.Context, id string, expectedRevision uint64, mutate func(*taskpb.Task) error) (*taskpb.Task, error) {
@@ -356,12 +371,16 @@ func (s *Store) Update(ctx context.Context, id string, expectedRevision uint64, 
 	}
 	dueMs := msOf(cur.GetDueTime())
 	completedMs := msOf(cur.GetCompletedTime())
+	userData, err := marshalStruct(cur.GetUserData())
+	if err != nil {
+		return nil, err
+	}
 	nowMs := s.now().UnixMilli()
 	newRevision := r.revision + 1
 
 	if _, err := tx.ExecContext(ctx,
-		"UPDATE tasks SET title = ?, notes = ?, due_ms = ?, completed_ms = ?, revision = ?, updated_ms = ? WHERE id = ?",
-		title, cur.GetNotes(), dueMs, completedMs, newRevision, nowMs, id); err != nil {
+		"UPDATE tasks SET title = ?, notes = ?, due_ms = ?, completed_ms = ?, user_data = ?, revision = ?, updated_ms = ? WHERE id = ?",
+		title, cur.GetNotes(), dueMs, completedMs, userData, newRevision, nowMs, id); err != nil {
 		return nil, fmt.Errorf("update task: %w", err)
 	}
 	// Labels are replaced wholesale.
@@ -380,6 +399,10 @@ func (s *Store) Update(ctx context.Context, id string, expectedRevision uint64, 
 	if err != nil {
 		return nil, err
 	}
+	newUserData, err := unmarshalStruct(userData)
+	if err != nil {
+		return nil, err
+	}
 	return &taskpb.Task{
 		Id:            r.id,
 		Title:         title,
@@ -390,6 +413,7 @@ func (s *Store) Update(ctx context.Context, id string, expectedRevision uint64, 
 		Source:        r.source,
 		ExternalRef:   r.externalRef,
 		ExternalData:  data,
+		UserData:      newUserData,
 		Revision:      uint64(newRevision),
 		CreateTime:    msTS(r.createdMs),
 		UpdateTime:    msTS(nowMs),

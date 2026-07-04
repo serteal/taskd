@@ -1,6 +1,7 @@
 import { useNow, useSnapshot, useTheme } from "../lib/hooks";
 import { matchesView, sameView, viewTitle, type View } from "../lib/views";
 import { chipParts } from "../lib/format";
+import { registry, useRegistry } from "../lib/extensions";
 
 // Everything below the fixed views is computed from the live replica —
 // projects are the "project:" labels in use, sources are whatever syncers
@@ -15,6 +16,7 @@ export function Sidebar({
   const snap = useSnapshot();
   const now = useNow();
   const [dark, toggleTheme] = useTheme();
+  useRegistry(); // re-render as extensions register views
   const tasks = [...snap.tasks.values()];
 
   const count = (v: View) => tasks.filter((t) => matchesView(t, v, now)).length;
@@ -52,6 +54,14 @@ export function Sidebar({
               count={v.kind === "completed" ? undefined : count(v)}
               active={sameView(view, v)}
               onClick={() => onNavigate(v)}
+            />
+          ))}
+          {registry.views.map((v) => (
+            <SideItem
+              key={`ext-${v.id}`}
+              label={v.title}
+              active={view.kind === "ext" && view.id === v.id}
+              onClick={() => onNavigate({ kind: "ext", id: v.id })}
             />
           ))}
         </ul>

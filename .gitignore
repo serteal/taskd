@@ -6,4 +6,9 @@
 *.db-shm
 dist/
 web/node_modules/
+web/tsconfig.tsbuildinfo
 internal/webui/dist/
+# Built extension binaries and real (possibly secret-bearing) configs; the
+# .example files are committed.
+extensions/*/task-sync-*
+extensions/*/config.yaml

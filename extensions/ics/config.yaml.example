@@ -1,0 +1,20 @@
+# Copy to config.yaml next to the binary and edit. The daemon runs the
+# syncer with this folder as the working directory, so config.yaml is read
+# from here.
+
+# How often to re-sync each calendar (Go duration). Optional; default 15m.
+interval: 15m
+
+calendars:
+  # The task source becomes "ics:<name>".
+  - name: work
+    # Exactly one of url or path. Google Calendar exposes a private ICS URL
+    # per calendar under Settings → "Secret address in iCal format".
+    url: https://example.com/calendar.ics
+    # path: /Users/me/Calendars/work.ics
+    # Labels added to every event this calendar imports (never removed).
+    labels: [calendar]
+
+  # - name: home
+  #   path: /Users/me/Calendars/home.ics
+  #   labels: [calendar, personal]

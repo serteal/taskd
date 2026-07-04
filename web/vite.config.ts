@@ -15,6 +15,7 @@ export default defineConfig({
     proxy: {
       "/task.TaskService": "http://127.0.0.1:7517",
       "/healthz": "http://127.0.0.1:7517",
+      "/ext": "http://127.0.0.1:7517",
     },
   },
   test: {

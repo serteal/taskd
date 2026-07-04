@@ -1,4 +1,4 @@
-package syncer
+package main
 
 import (
 	"context"
@@ -41,23 +41,17 @@ func icsFile(t *testing.T, body string) string {
 	return path
 }
 
-// icsSync builds the syncer through New (proving registry wiring), pins the
-// clock, syncs the fixture, and returns the captured upsert request.
-func icsSync(t *testing.T, cfg Config, body string) *taskpb.UpsertExternalTasksRequest {
+// icsSync syncs a fixture through the full syncCalendar path with a pinned
+// clock and returns the captured upsert request.
+func icsSync(t *testing.T, cal calendar, body string) *taskpb.UpsertExternalTasksRequest {
 	t.Helper()
-	cfg.Type = "ics"
-	if cfg.Name == "" {
-		cfg.Name = "work"
+	if cal.Name == "" {
+		cal.Name = "work"
 	}
-	cfg.Path = icsFile(t, body)
-	s, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	s.(*icsSyncer).now = func() time.Time { return icsFakeNow }
+	cal.Path = icsFile(t, body)
 	fc := &fakeTaskClient{}
-	if err := s.Sync(context.Background(), fc); err != nil {
-		t.Fatalf("Sync: %v", err)
+	if err := syncCalendar(context.Background(), fc, cal, func() time.Time { return icsFakeNow }); err != nil {
+		t.Fatalf("syncCalendar: %v", err)
 	}
 	if fc.got == nil {
 		t.Fatal("UpsertExternalTasks was not called")
@@ -74,7 +68,7 @@ func refs(req *taskpb.UpsertExternalTasksRequest) []string {
 }
 
 func TestICSUpcomingEvent(t *testing.T) {
-	got := icsSync(t, Config{Labels: []string{"cal", "work"}}, `
+	got := icsSync(t, calendar{Labels: []string{"cal", "work"}}, `
 BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//test//EN
@@ -129,7 +123,7 @@ END:VCALENDAR`)
 }
 
 func TestICSPastEventCompleted(t *testing.T) {
-	got := icsSync(t, Config{}, `
+	got := icsSync(t, calendar{}, `
 BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//test//EN
@@ -155,7 +149,7 @@ END:VCALENDAR`)
 }
 
 func TestICSWindowFiltering(t *testing.T) {
-	got := icsSync(t, Config{}, `
+	got := icsSync(t, calendar{}, `
 BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//test//EN
@@ -184,7 +178,7 @@ END:VCALENDAR`)
 }
 
 func TestICSRecurrenceExpansion(t *testing.T) {
-	got := icsSync(t, Config{}, `
+	got := icsSync(t, calendar{}, `
 BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//test//EN
@@ -229,7 +223,7 @@ END:VCALENDAR`)
 }
 
 func TestICSAllDayEvent(t *testing.T) {
-	got := icsSync(t, Config{}, `
+	got := icsSync(t, calendar{}, `
 BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//test//EN
@@ -260,33 +254,46 @@ END:VCALENDAR`)
 	}
 }
 
-func TestICSConfigValidation(t *testing.T) {
-	cases := []struct {
-		name    string
-		cfg     Config
-		wantErr bool
-	}{
-		{"missing name", Config{Type: "ics", URL: "http://example.com/c.ics"}, true},
-		{"neither URL nor Path", Config{Type: "ics", Name: "a"}, true},
-		{"both URL and Path", Config{Type: "ics", Name: "a", URL: "u", Path: "p"}, true},
-		{"URL only", Config{Type: "ics", Name: "a", URL: "http://example.com/c.ics"}, false},
-		{"Path only", Config{Type: "ics", Name: "a", Path: "/tmp/c.ics"}, false},
+func TestParseConfig(t *testing.T) {
+	cfg, err := parseConfig([]byte(`
+interval: 5m
+calendars:
+  - name: work
+    url: https://example.com/c.ics
+    labels: [calendar]
+  - name: home
+    path: /tmp/home.ics
+`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s, err := New(tc.cfg) // via the registry: builders["ics"] must be wired
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("New(%+v) succeeded, want error", tc.cfg)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("New(%+v): %v", tc.cfg, err)
-			}
-			if got := s.Source(); got != "ics:a" {
-				t.Errorf("Source() = %q, want %q", got, "ics:a")
-			}
-		})
+	if cfg.Interval != 5*time.Minute {
+		t.Errorf("interval = %v, want 5m", cfg.Interval)
+	}
+	if len(cfg.Calendars) != 2 || cfg.Calendars[0].Name != "work" {
+		t.Fatalf("calendars = %+v", cfg.Calendars)
+	}
+
+	bad := []string{
+		"calendars: []",                                                 // none configured
+		"calendars:\n  - url: u",                                        // missing name
+		"calendars:\n  - name: a",                                       // neither url nor path
+		"calendars:\n  - name: a\n    url: u\n    path: p",              // both
+		"calendars:\n  - name: a\n    url: u\n  - name: a\n    path: p", // duplicate name
+		"interval: nonsense\ncalendars:\n  - name: a\n    url: u",       // bad interval
+	}
+	for _, in := range bad {
+		if _, err := parseConfig([]byte(in)); err == nil {
+			t.Errorf("parseConfig(%q) succeeded, want error", in)
+		}
+	}
+
+	// Default interval when omitted.
+	def, err := parseConfig([]byte("calendars:\n  - name: a\n    url: u"))
+	if err != nil {
+		t.Fatalf("parseConfig default: %v", err)
+	}
+	if def.Interval != 15*time.Minute {
+		t.Errorf("default interval = %v, want 15m", def.Interval)
 	}
 }

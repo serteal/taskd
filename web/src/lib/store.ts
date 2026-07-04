@@ -1,3 +1,4 @@
+import type { JsonObject } from "@bufbuild/protobuf";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError } from "@connectrpc/connect";
 import type { Task, WatchTasksResponse } from "../gen/task/task_pb";
@@ -30,6 +31,12 @@ export interface TaskPatch {
   /** undefined = untouched; null = clear the due date. */
   due?: Date | null;
   completed?: boolean;
+  /**
+   * Whole-field replace of the task's user_data (undefined = untouched;
+   * null = clear). Merge by spreading the current value:
+   * `{ ...task.userData, timebox }`.
+   */
+  userData?: JsonObject | null;
   expectedRevision?: bigint;
 }
 
@@ -48,7 +55,7 @@ export class TaskStore {
   onNotice?: (message: string) => void;
 
   constructor(
-    private client: TaskClient,
+    readonly client: TaskClient,
     private opts: { minBackoffMs?: number; maxBackoffMs?: number; now?: () => number } = {},
   ) {
     this.snap = this.buildSnapshot();
@@ -127,6 +134,10 @@ export class TaskStore {
       paths.push("completed_time");
       init.completedTime = patch.completed ? timestampFromDate(new Date()) : undefined;
     }
+    if (patch.userData !== undefined) {
+      paths.push("user_data");
+      init.userData = patch.userData ?? undefined;
+    }
     if (paths.length === 0) return;
 
     // Optimistic application; the response or a refetch will correct it.
@@ -144,6 +155,7 @@ export class TaskStore {
         ...(patch.completed !== undefined
           ? { completedTime: patch.completed ? timestampFromDate(new Date()) : undefined }
           : null),
+        ...(patch.userData !== undefined ? { userData: patch.userData ?? undefined } : null),
       };
       this.place(opt);
       this.emit();

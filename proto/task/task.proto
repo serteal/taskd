@@ -27,7 +27,8 @@ service TaskService {
   rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
 
   // Updates the fields named by update_mask, reading new values from task.
-  // Maskable paths: "title", "notes", "labels", "due_time", "completed_time".
+  // Maskable paths: "title", "notes", "labels", "due_time",
+  // "completed_time", "user_data".
   // Masking a path whose value is unset clears it (unset due_time removes
   // the due date; unset completed_time re-opens the task). Completing a task
   // IS setting completed_time — there is no separate RPC.
@@ -92,6 +93,13 @@ message Task {
   // Increments on every write. Optimistic concurrency for writers; ordering
   // for watchers.
   uint64 revision = 10;
+  // User- and client-owned structured extension data — the user-side mirror
+  // of external_data. The server stores and returns it, never interprets
+  // it, and sync NEVER touches it. Written via UpdateTask (mask path
+  // "user_data", whole-field replace — read-modify-write to merge). By
+  // convention top-level keys are namespaced per extension ("timebox",
+  // "gcal", …) so extensions coexist without a registry.
+  google.protobuf.Struct user_data = 13;
   google.protobuf.Timestamp create_time = 11;
   google.protobuf.Timestamp update_time = 12;
 }

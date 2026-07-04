@@ -1,10 +1,10 @@
-// ics.go implements the "ics" syncer: it mirrors an iCalendar feed (URL or
-// local file) into tasks via UpsertExternalTasks.
+// translate.go converts an iCalendar feed into ExternalTasks and upserts
+// them.
 //
 // Window: only VEVENTs whose start falls in [now-24h, now+30d] are sent, and
-// the batch is a full snapshot — the window IS this source's complete state,
-// so events that drift out of it are pruned by the server. Per the API's
-// ownership rules the feed owns title, due_time, completed_time, and
+// the batch is a full snapshot — the window IS this calendar's complete
+// state, so events that drift out of it are pruned by the server. Per the
+// API's ownership rules the feed owns title, due_time, completed_time, and
 // external_data; labels and notes stay with the user (apply_labels only
 // adds). A past event (end < now) is reported as completed.
 //
@@ -13,7 +13,7 @@
 // them into a rule). RECURRENCE-ID override events are not special-cased;
 // they pass through as standalone events.
 
-package syncer
+package main
 
 import (
 	"bytes"
@@ -44,49 +44,32 @@ const (
 	icsMaxOccurrences = 100 // per series; runaway guard for pathological RRULEs
 )
 
-func init() { builders["ics"] = newICS }
-
-type icsSyncer struct {
-	cfg Config
-	now func() time.Time // injectable clock for tests
-}
-
-func newICS(cfg Config) (Syncer, error) {
-	if cfg.Name == "" {
-		return nil, fmt.Errorf("ics syncer: name is required")
-	}
-	if (cfg.URL == "") == (cfg.Path == "") {
-		return nil, fmt.Errorf("ics syncer %q: exactly one of url or path must be set", cfg.Name)
-	}
-	return &icsSyncer{cfg: cfg, now: time.Now}, nil
-}
-
-func (s *icsSyncer) Source() string { return "ics:" + s.cfg.Name }
-
-func (s *icsSyncer) Sync(ctx context.Context, tc taskconnect.TaskServiceClient) error {
-	cal, err := s.fetch(ctx)
+// syncCalendar fetches one calendar, converts its events, and upserts them
+// as the calendar's full snapshot.
+func syncCalendar(ctx context.Context, tc taskconnect.TaskServiceClient, cal calendar, now func() time.Time) error {
+	source := "ics:" + cal.Name
+	parsed, err := fetchCalendar(ctx, cal)
 	if err != nil {
-		return fmt.Errorf("%s: %w", s.Source(), err)
+		return fmt.Errorf("%s: %w", source, err)
 	}
-	tasks, err := icsToTasks(cal, s.now())
+	tasks, err := icsToTasks(parsed, now())
 	if err != nil {
-		return fmt.Errorf("%s: %w", s.Source(), err)
+		return fmt.Errorf("%s: %w", source, err)
 	}
-	_, err = tc.UpsertExternalTasks(ctx, connect.NewRequest(&taskpb.UpsertExternalTasksRequest{
-		Source:       s.Source(),
+	if _, err := tc.UpsertExternalTasks(ctx, connect.NewRequest(&taskpb.UpsertExternalTasksRequest{
+		Source:       source,
 		Tasks:        tasks,
-		ApplyLabels:  s.cfg.Labels,
+		ApplyLabels:  cal.Labels,
 		FullSnapshot: true,
-	}))
-	if err != nil {
-		return fmt.Errorf("%s: upsert: %w", s.Source(), err)
+	})); err != nil {
+		return fmt.Errorf("%s: upsert: %w", source, err)
 	}
 	return nil
 }
 
-func (s *icsSyncer) fetch(ctx context.Context) (*ics.Calendar, error) {
-	if s.cfg.Path != "" {
-		b, err := os.ReadFile(s.cfg.Path)
+func fetchCalendar(ctx context.Context, cal calendar) (*ics.Calendar, error) {
+	if cal.Path != "" {
+		b, err := os.ReadFile(cal.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -94,7 +77,7 @@ func (s *icsSyncer) fetch(ctx context.Context) (*ics.Calendar, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, icsFetchTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cal.URL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +87,7 @@ func (s *icsSyncer) fetch(ctx context.Context) (*ics.Calendar, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: %s", s.cfg.URL, resp.Status)
+		return nil, fmt.Errorf("GET %s: %s", cal.URL, resp.Status)
 	}
 	return ics.ParseCalendar(resp.Body)
 }

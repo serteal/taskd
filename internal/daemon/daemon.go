@@ -18,11 +18,10 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
+	"todoapp/internal/extension"
 	"todoapp/internal/server"
 	"todoapp/internal/store"
-	"todoapp/internal/syncer"
 	"todoapp/internal/webui"
-	"todoapp/pkg/client"
 )
 
 type Options struct {
@@ -58,6 +57,11 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	defer st.Close()
 
+	exts, err := extension.Scan(filepath.Join(dir, "extensions"))
+	if err != nil {
+		return err
+	}
+
 	mux := http.NewServeMux()
 	path, handler := server.New(st).Handler()
 	mux.Handle(path, handler)
@@ -65,6 +69,8 @@ func Run(ctx context.Context, opts Options) error {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
+	// Extension web bundles + index, for the frontend's loader.
+	mux.Handle("/ext/", extension.Handler(exts))
 	// The web UI (or a pointer to how to build it); longer API patterns win.
 	mux.Handle("/", webui.Handler())
 
@@ -92,19 +98,16 @@ func Run(ctx context.Context, opts Options) error {
 		log.Printf("taskd: listening on unix://%s", cfg.Socket)
 	}
 
-	// Syncers connect back through the public API like any other client.
-	tc := client.New("http://" + cfg.Listen)
-	for _, y := range cfg.Syncers {
-		scfg, err := y.toConfig()
-		if err != nil {
-			return err
+	// Extension syncers are separate processes talking back through the
+	// public API — supervised here purely for operational convenience.
+	for _, ext := range exts {
+		if len(ext.Syncer) > 0 {
+			go extension.Supervise(ctx, ext, cfg.Listen)
+			log.Printf("taskd: extension %s: supervising syncer", ext.Name)
 		}
-		s, err := syncer.New(scfg)
-		if err != nil {
-			return err
+		if ext.Web {
+			log.Printf("taskd: extension %s: serving web bundle at /ext/%s/", ext.Name, ext.Name)
 		}
-		go syncer.Run(ctx, s, scfg.Interval, tc)
-		log.Printf("taskd: syncer %s every %s", s.Source(), effectiveInterval(scfg.Interval))
 	}
 
 	select {
@@ -117,11 +120,4 @@ func Run(ctx context.Context, opts Options) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return httpSrv.Shutdown(shutdownCtx)
-}
-
-func effectiveInterval(d time.Duration) time.Duration {
-	if d <= 0 {
-		return syncer.DefaultInterval
-	}
-	return d
 }

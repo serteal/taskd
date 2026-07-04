@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNow, useSnapshot, useStore, useView } from "./lib/hooks";
 import { viewTitle } from "./lib/views";
+import { buildAPI, registry, uiBridge, useRegistry } from "./lib/extensions";
 import { Sidebar } from "./components/Sidebar";
 import { TaskList, visibleTasks } from "./components/TaskList";
 import { CompletedList } from "./components/CompletedList";
@@ -31,14 +32,31 @@ export default function App() {
     };
   }, [store]);
 
+  // Extensions open the host detail panel through this bridge.
+  useEffect(() => {
+    uiBridge.openTask = (id) => {
+      setSelectedId(id);
+      setOpenId(id);
+    };
+    return () => {
+      uiBridge.openTask = () => {};
+    };
+  }, []);
+  useRegistry(); // re-render when extensions register
+
   useEffect(() => {
     if (toast === null) return;
     const t = setTimeout(() => setToast(null), 4000);
     return () => clearTimeout(t);
   }, [toast]);
 
-  const tasks = view.kind === "completed" ? [] : visibleTasks(snap.tasks.values(), view, now);
+  const tasks =
+    view.kind === "completed" || view.kind === "ext"
+      ? []
+      : visibleTasks(snap.tasks.values(), view, now);
   const openTask = openId !== null ? snap.tasks.get(openId) : undefined;
+  const extView = view.kind === "ext" ? registry.viewById(view.id) : undefined;
+  const api = useMemo(() => buildAPI(store), [store]);
 
   // Keyboard: list navigation stays out of the way of typing.
   useEffect(() => {
@@ -98,16 +116,28 @@ export default function App() {
 
         <main className="flex min-w-0 flex-1 flex-col">
           <header className="flex items-baseline gap-2.5 px-3 pb-2 pt-4">
-            <h1 className="text-[19px] font-semibold tracking-tight">{viewTitle(view)}</h1>
-            {view.kind !== "completed" && (
+            <h1 className="text-[19px] font-semibold tracking-tight">
+              {extView ? extView.title : viewTitle(view)}
+            </h1>
+            {view.kind !== "completed" && view.kind !== "ext" && (
               <span className="font-mono text-[12px] text-faint">{tasks.length}</span>
             )}
           </header>
 
-          {view.kind !== "completed" && <QuickAdd ref={quickAddRef} view={view} now={now} />}
+          {view.kind !== "completed" && view.kind !== "ext" && (
+            <QuickAdd ref={quickAddRef} view={view} now={now} />
+          )}
 
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {view.kind === "completed" ? (
+            {view.kind === "ext" ? (
+              extView ? (
+                <extView.Component api={api} />
+              ) : (
+                <div className="px-3 py-16 text-center text-[13px] text-mute">
+                  No extension provides the view "{view.id}". Is it installed?
+                </div>
+              )
+            ) : view.kind === "completed" ? (
               <CompletedList />
             ) : (
               <TaskList

@@ -15,10 +15,13 @@ export type View =
   | { kind: "all" }
   | { kind: "completed" }
   | { kind: "label"; label: string }
-  | { kind: "source"; source: string };
+  | { kind: "source"; source: string }
+  | { kind: "ext"; id: string };
 
 export function parseView(search: string): View {
   const p = new URLSearchParams(search);
+  const ext = p.get("ext");
+  if (ext) return { kind: "ext", id: ext };
   const label = p.get("label");
   if (label) return { kind: "label", label };
   const source = p.get("source");
@@ -48,6 +51,9 @@ export function viewToSearch(v: View): string {
     case "source":
       p.set("source", v.source);
       break;
+    case "ext":
+      p.set("ext", v.id);
+      break;
     default:
       p.set("view", v.kind);
   }
@@ -70,6 +76,8 @@ export function viewTitle(v: View): string {
       return v.label;
     case "source":
       return v.source;
+    case "ext":
+      return v.id;
   }
 }
 
@@ -91,6 +99,8 @@ export function matchesView(t: Task, v: View, now: Date): boolean {
       return t.source === v.source;
     case "completed":
       return false; // served by the server, not the replica
+    case "ext":
+      return false; // extension views render their own content
   }
 }
 

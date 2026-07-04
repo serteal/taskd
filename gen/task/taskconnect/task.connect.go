@@ -70,7 +70,8 @@ type TaskServiceClient interface {
 	CreateTask(context.Context, *connect.Request[task.CreateTaskRequest]) (*connect.Response[task.CreateTaskResponse], error)
 	GetTask(context.Context, *connect.Request[task.GetTaskRequest]) (*connect.Response[task.GetTaskResponse], error)
 	// Updates the fields named by update_mask, reading new values from task.
-	// Maskable paths: "title", "notes", "labels", "due_time", "completed_time".
+	// Maskable paths: "title", "notes", "labels", "due_time",
+	// "completed_time", "user_data".
 	// Masking a path whose value is unset clears it (unset due_time removes
 	// the due date; unset completed_time re-opens the task). Completing a task
 	// IS setting completed_time — there is no separate RPC.
@@ -222,7 +223,8 @@ type TaskServiceHandler interface {
 	CreateTask(context.Context, *connect.Request[task.CreateTaskRequest]) (*connect.Response[task.CreateTaskResponse], error)
 	GetTask(context.Context, *connect.Request[task.GetTaskRequest]) (*connect.Response[task.GetTaskResponse], error)
 	// Updates the fields named by update_mask, reading new values from task.
-	// Maskable paths: "title", "notes", "labels", "due_time", "completed_time".
+	// Maskable paths: "title", "notes", "labels", "due_time",
+	// "completed_time", "user_data".
 	// Masking a path whose value is unset clears it (unset due_time removes
 	// the due date; unset completed_time re-opens the task). Completing a task
 	// IS setting completed_time — there is no separate RPC.
