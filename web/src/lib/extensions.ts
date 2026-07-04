@@ -1,10 +1,11 @@
-import type { ComponentType } from "react";
-import { useSyncExternalStore } from "react";
+import type { ComponentType, ReactNode } from "react";
+import { createElement, useSyncExternalStore } from "react";
 import type { Task } from "../gen/task/task_pb";
 import type { TaskStore, TaskPatch } from "./store";
 import { chipParts, tsDate } from "./format";
 import { TASK_DRAG_MIME, readTaskId } from "./dnd";
 import { extensionNotify } from "./notify";
+import { Icon, type IconName } from "../components/icons";
 
 // The host side of the extension system: a registry the UI reads
 // reactively, the api object handed to each extension's register(), and the
@@ -16,7 +17,8 @@ export interface RowMeta {
   timeText?: string;
   subtitle?: string;
   extraChips?: string[];
-  icon?: string;
+  /** A core icon (api.icon(...)), a custom <svg>, or plain text/emoji. */
+  icon?: ReactNode;
 }
 
 export interface Presenter {
@@ -46,7 +48,8 @@ export interface Command {
   id: string;
   title: string;
   group?: string;
-  icon?: string;
+  /** A core icon (api.icon(...)), a custom <svg>, or plain text/emoji. */
+  icon?: ReactNode;
   /** Optional keywords to widen fuzzy matching beyond the title. */
   keywords?: string;
   /** Hidden when this returns false. */
@@ -158,6 +161,10 @@ export function buildAPI(store: TaskStore) {
     dnd: { mime: TASK_DRAG_MIME, readTaskId },
     // Transient toasts + browser notifications.
     notify: extensionNotify,
+    // A core SVG icon by name, for use in RowMeta/Command icon fields (or
+    // inline your own <svg> instead).
+    icon: (name: IconName, opts?: { size?: number; className?: string }): ReactNode =>
+      createElement(Icon, { name, ...opts }),
     format: { tsDate, chipParts },
   };
 }

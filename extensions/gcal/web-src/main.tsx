@@ -6,7 +6,7 @@
 
 import { useEffect, useState } from "react";
 import type { ExtensionAPI, Task, TaskdExtension } from "@taskd/extension-api";
-import { calendarPresenter } from "./presenter";
+import { makeCalendarPresenter } from "./presenter";
 import { DayColumn } from "./DayColumn";
 import {
   DEFAULT_BOX_MIN,
@@ -306,7 +306,7 @@ function NavButton({ label, title, onClick }: { label: string; title: string; on
 const extension: TaskdExtension = {
   name: "gcal",
   register(api) {
-    api.registerPresenter(calendarPresenter);
+    api.registerPresenter(makeCalendarPresenter(api));
     api.registerPanel({
       id: "day",
       title: "Today",
@@ -321,7 +321,7 @@ const extension: TaskdExtension = {
       id: "today-events",
       title: "Calendar: today's events",
       group: "Calendar",
-      icon: "📅",
+      icon: api.icon("calendar"),
       run: () => {
         const today = new Date();
         const n = api.getTasks().filter((t) => {

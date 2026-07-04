@@ -17,7 +17,7 @@
 //   --bg --surface --ink --muted --faint --line --accent --warn
 // and fonts: "IBM Plex Sans" (UI) / "IBM Plex Mono" (data).
 
-import type { ComponentType } from "react";
+import type { ComponentType, ReactNode } from "react";
 
 // The Task message, exactly as protoc-gen-es generates it from
 // proto/task/task.proto — re-exported so extensions get the real type (with
@@ -36,8 +36,9 @@ export interface RowMeta {
   subtitle?: string;
   /** Additional label-style chips (plain strings). */
   extraChips?: string[];
-  /** Emoji or 1–2 character marker shown before the title. */
-  icon?: string;
+  /** Icon before the title: a core icon `api.icon("...")`, your own <svg>,
+   *  or plain text/emoji. */
+  icon?: ReactNode;
 }
 
 export interface Presenter {
@@ -80,8 +81,8 @@ export interface Command {
   title: string;
   /** Section heading in the palette. */
   group?: string;
-  /** Emoji or 1–2 char marker. */
-  icon?: string;
+  /** A core icon `api.icon("...")`, your own <svg>, or text/emoji. */
+  icon?: ReactNode;
   /** Extra words to match on beyond the title. */
   keywords?: string;
   /** Hidden when this returns false. */
@@ -174,6 +175,15 @@ export interface ExtensionAPI {
     /** Native browser notification; requests permission on first use. */
     browser(title: string, options?: NotificationOptions): Promise<void>;
   };
+
+  /**
+   * A crisp SVG icon from the core set, for RowMeta/Command icon fields — or
+   * inline your own <svg> instead. Icons use `currentColor`, so they take the
+   * surrounding text color. Names: plus, star, moon, panel, sort,
+   * chevron-right, hash, tag, swap, open, check, calendar, trash, diamond,
+   * circle, flag, inbox, search, list, board, x.
+   */
+  icon(name: string, opts?: { size?: number; className?: string }): ReactNode;
 
   format: {
     /** proto Timestamp → Date (undefined-safe). */

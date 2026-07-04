@@ -6,15 +6,7 @@
 import type { ExtensionAPI, RowMeta, Task, TaskdExtension } from "@taskd/extension-api";
 import { ghData } from "./gh";
 import { IssueDetail } from "./IssueDetail";
-
-// One clear, consistent marker per state: green open, purple merged, red
-// closed, hollow draft. Mirrors GitHub's own color language.
-const stateIcon: Record<string, string> = {
-  open: "🟢",
-  merged: "🟣",
-  closed: "🔴",
-  draft: "⚪",
-};
+import { Octicon, MARK_GITHUB, ghStateIcon } from "./gh-icons";
 
 const extension: TaskdExtension = {
   name: "github",
@@ -26,7 +18,8 @@ const extension: TaskdExtension = {
         const subtitle =
           d.repo && d.number != null ? `${d.repo}#${d.number}` : d.repo || undefined;
         return {
-          icon: stateIcon[d.state] ?? "🟢",
+          // github ships its own colored octicons (state color baked in).
+          icon: ghStateIcon(d.kind, d.state),
           subtitle,
           extraChips: [d.kind === "pr" ? "PR" : "issue", d.state],
         };
@@ -39,7 +32,7 @@ const extension: TaskdExtension = {
       id: "open-count",
       title: "GitHub: count open issues & PRs",
       group: "GitHub",
-      icon: "🐙",
+      icon: <Octicon path={MARK_GITHUB} />,
       keywords: "pr issues review",
       run: () => {
         const open = api.getTasks().filter((t) => t.source === "github" && !t.completedTime).length;

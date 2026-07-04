@@ -31,6 +31,10 @@ Inside `register(api)`:
   code (a command's `run()`), where a hook can't be used.
 - **`api.notify.toast/error/browser(...)`** — transient toasts (with an
   optional action button) and native browser notifications.
+- **`api.icon(name, opts?)`** — a crisp SVG from the core icon set (calendar,
+  tag, flag, check, trash, circle, …) for `RowMeta`/`Command` icon fields.
+  Icons use `currentColor`. To ship your own look instead, inline any `<svg>`
+  in those fields (the github extension does this for colored state icons).
 - **`api.store.create/update/delete`** — optimistic mutations. To write your
   own structured data, use `user_data` (user-owned, never touched by sync):
   `api.store.update(id, { userData: { ...task.userData, mine: {...} } })`.

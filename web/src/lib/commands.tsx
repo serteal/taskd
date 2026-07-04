@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { Task } from "../gen/task/task_pb";
 import type { TaskStore } from "./store";
 import type { Command } from "./extensions";
@@ -5,6 +6,7 @@ import type { View, SortMode } from "./views";
 import { chipParts, endOfDay } from "./format";
 import { SORT_LABELS } from "./views";
 import { completeTask, deleteTaskWithUndo, rescheduleTask } from "./actions";
+import { Icon } from "../components/icons";
 
 // Builds the ⌘K palette's command list from the current app state. The palette
 // filters/ranks these by the query; task search is added separately from the
@@ -14,7 +16,7 @@ export interface PaletteCommand {
   id: string;
   title: string;
   group: string;
-  icon?: string;
+  icon?: ReactNode;
   keywords?: string;
   run: () => void;
 }
@@ -41,15 +43,15 @@ export function buildStaticCommands(ctx: CommandContext): PaletteCommand[] {
   const out: PaletteCommand[] = [];
 
   // Global
-  out.push({ id: "new-task", title: "New task", group: "Actions", icon: "+", keywords: "add create", run: ctx.openAdd });
-  out.push({ id: "save-view", title: "Save current view…", group: "Actions", icon: "★", keywords: "pin bookmark filter", run: ctx.saveCurrentView });
-  out.push({ id: "theme", title: "Toggle theme", group: "Actions", icon: "◐", keywords: "dark light", run: ctx.toggleTheme });
+  out.push({ id: "new-task", title: "New task", group: "Actions", icon: <Icon name="plus" />, keywords: "add create", run: ctx.openAdd });
+  out.push({ id: "save-view", title: "Save current view…", group: "Actions", icon: <Icon name="star" />, keywords: "pin bookmark filter", run: ctx.saveCurrentView });
+  out.push({ id: "theme", title: "Toggle theme", group: "Actions", icon: <Icon name="moon" />, keywords: "dark light", run: ctx.toggleTheme });
   for (const p of ctx.panels) {
     out.push({
       id: `panel-${p.id}`,
       title: `Toggle ${p.title.toLowerCase()} panel`,
       group: "Actions",
-      icon: "▦",
+      icon: <Icon name="panel" />,
       run: () => ctx.togglePanel(p.id),
     });
   }
@@ -58,7 +60,7 @@ export function buildStaticCommands(ctx: CommandContext): PaletteCommand[] {
       id: `sort-${s}`,
       title: `Sort: ${SORT_LABELS[s]}`,
       group: "Actions",
-      icon: "↕",
+      icon: <Icon name="sort" />,
       run: () => ctx.setSort(s),
     }),
   );
@@ -72,7 +74,7 @@ export function buildStaticCommands(ctx: CommandContext): PaletteCommand[] {
     ["Completed", { kind: "completed" }],
   ];
   for (const [title, v] of fixed) {
-    out.push({ id: `go-${title}`, title: `Go to ${title}`, group: "Go to", icon: "→", run: () => ctx.navigate(v) });
+    out.push({ id: `go-${title}`, title: `Go to ${title}`, group: "Go to", icon: <Icon name="chevron-right" />, run: () => ctx.navigate(v) });
   }
   // Navigation — computed projects / labels / sources
   const labels = new Set<string>();
@@ -87,7 +89,7 @@ export function buildStaticCommands(ctx: CommandContext): PaletteCommand[] {
       id: `go-label-${l}`,
       title: parts.ns === "project" ? `Go to project ${parts.val}` : `Go to label ${l}`,
       group: "Go to",
-      icon: parts.ns === "project" ? "#" : "🏷",
+      icon: <Icon name={parts.ns === "project" ? "hash" : "tag"} />,
       keywords: l,
       run: () => ctx.navigate({ kind: "label", label: l }),
     });
@@ -97,7 +99,7 @@ export function buildStaticCommands(ctx: CommandContext): PaletteCommand[] {
       id: `go-source-${s}`,
       title: `Go to ${s}`,
       group: "Go to",
-      icon: "⇄",
+      icon: <Icon name="swap" />,
       run: () => ctx.navigate({ kind: "source", source: s }),
     });
   }
@@ -106,16 +108,16 @@ export function buildStaticCommands(ctx: CommandContext): PaletteCommand[] {
   const sel = ctx.selectedId ? ctx.tasks.find((t) => t.id === ctx.selectedId) : undefined;
   if (sel) {
     const label = sel.title.length > 24 ? sel.title.slice(0, 23) + "…" : sel.title;
-    out.push({ id: "sel-open", title: `Open “${label}”`, group: "Selected task", icon: "↳", run: () => ctx.openTask(sel.id) });
-    out.push({ id: "sel-done", title: `Complete “${label}”`, group: "Selected task", icon: "✓", run: () => completeTask(ctx.store, sel) });
+    out.push({ id: "sel-open", title: `Open “${label}”`, group: "Selected task", icon: <Icon name="open" />, run: () => ctx.openTask(sel.id) });
+    out.push({ id: "sel-done", title: `Complete “${label}”`, group: "Selected task", icon: <Icon name="check" />, run: () => completeTask(ctx.store, sel) });
     out.push({
       id: "sel-today",
       title: `Schedule “${label}” today`,
       group: "Selected task",
-      icon: "📅",
+      icon: <Icon name="calendar" />,
       run: () => rescheduleTask(ctx.store, sel, endOfDay(ctx.now)),
     });
-    out.push({ id: "sel-delete", title: `Delete “${label}”`, group: "Selected task", icon: "🗑", run: () => deleteTaskWithUndo(ctx.store, sel) });
+    out.push({ id: "sel-delete", title: `Delete “${label}”`, group: "Selected task", icon: <Icon name="trash" />, run: () => deleteTaskWithUndo(ctx.store, sel) });
   }
 
   // Extension-contributed commands
@@ -125,7 +127,7 @@ export function buildStaticCommands(ctx: CommandContext): PaletteCommand[] {
       id: `ext-${c.id}`,
       title: c.title,
       group: c.group ?? "Extensions",
-      icon: c.icon ?? "◆",
+      icon: c.icon ?? <Icon name="diamond" />,
       keywords: c.keywords,
       run: c.run,
     });
@@ -160,7 +162,7 @@ export function searchTaskCommands(ctx: CommandContext, query: string): PaletteC
       id: `task-${t.id}`,
       title: t.title,
       group: "Tasks",
-      icon: "○",
+      icon: <Icon name="circle" />,
       run: () => ctx.openTask(t.id),
     }));
 }

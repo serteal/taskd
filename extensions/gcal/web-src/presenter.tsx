@@ -3,14 +3,8 @@
 // from external_data. The event is owned by its calendar, so nothing here is
 // editable — the panel just reflects the source.
 
-import type { Presenter, RowMeta, Task } from "@taskd/extension-api";
+import type { ExtensionAPI, Presenter, RowMeta, Task } from "@taskd/extension-api";
 import { MONO, eventInterval, fmtFullDate, fmtRange, fmtTime, isAllDay } from "./util";
-
-function rowMeta(t: Task): RowMeta {
-  if (isAllDay(t)) return { icon: "📅", timeText: "all day" };
-  const iv = eventInterval(t);
-  return { icon: "📅", timeText: iv ? fmtRange(iv.start, iv.end) : undefined };
-}
 
 function DetailSection({ task }: { task: Task }) {
   const d = task.externalData ?? {};
@@ -81,8 +75,14 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-export const calendarPresenter: Presenter = {
-  match: (t) => t.source.startsWith("gcal"),
-  rowMeta,
-  DetailSection,
-};
+// The row icon is a CORE icon, reached through api.icon — extensions can use
+// the built-in set instead of shipping their own (github does the opposite).
+export function makeCalendarPresenter(api: ExtensionAPI): Presenter {
+  const rowMeta = (t: Task): RowMeta => {
+    const icon = api.icon("calendar", { size: 14 });
+    if (isAllDay(t)) return { icon, timeText: "all day" };
+    const iv = eventInterval(t);
+    return { icon, timeText: iv ? fmtRange(iv.start, iv.end) : undefined };
+  };
+  return { match: (t) => t.source.startsWith("gcal"), rowMeta, DetailSection };
+}

@@ -7,6 +7,7 @@ import { addLabel, setProject } from "../lib/actions";
 import { notify } from "../lib/notify";
 import { readTaskId } from "../lib/dnd";
 import { savedViews, useSavedViews, type SavedView } from "../lib/savedviews";
+import { Icon } from "./icons";
 
 // Everything below the fixed views is computed from the live replica —
 // projects are the "project:" labels in use, sources are whatever syncers
@@ -78,8 +79,8 @@ export function Sidebar({
           onClick={onAddTask}
           className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] font-medium text-accent hover:bg-accent/10"
         >
-          <span className="flex h-[17px] w-[17px] items-center justify-center rounded-full bg-accent text-[13px] leading-none text-white">
-            +
+          <span className="flex h-[17px] w-[17px] items-center justify-center rounded-full bg-accent text-white">
+            <Icon name="plus" size={12} strokeWidth={2.5} />
           </span>
           Add task
           <span className="ml-auto font-mono text-[11px] text-faint">q</span>

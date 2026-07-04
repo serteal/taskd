@@ -111,7 +111,13 @@ export function CommandPalette({ ctx, onClose }: { ctx: CommandContext; onClose:
                     index === active ? "bg-accent/12 text-accent" : "text-ink"
                   }`}
                 >
-                  <span className="w-4 shrink-0 text-center text-[12px] text-mute">{cmd.icon}</span>
+                  <span
+                    className={`flex w-5 shrink-0 items-center justify-center ${
+                      index === active ? "text-accent" : "text-mute"
+                    }`}
+                  >
+                    {cmd.icon}
+                  </span>
                   <span className="truncate">{cmd.title}</span>
                 </button>
               ))}

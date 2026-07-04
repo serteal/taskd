@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { endOfDay } from "../lib/format";
 import { MenuItem } from "./Popover";
+import { Icon } from "./icons";
 
 // Menu bodies shared by the new-task overlay, row hover actions, inline
 // reschedule, and the bulk bar. Each renders inside a Popover and calls back
@@ -80,8 +81,8 @@ export function PriorityMenu({
       {PRIORITIES.map((p) => (
         <MenuItem key={p.value} onClick={() => pick(p.value)} hint={p.value}>
           <span className="inline-flex items-center gap-2">
-            <span aria-hidden style={{ color: p.color }}>
-              ⚑
+            <span style={{ color: p.color }}>
+              <Icon name="flag" size={13} />
             </span>
             {p.label}
           </span>

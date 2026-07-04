@@ -7,6 +7,7 @@ import { rescheduleTask, setPriority, deleteTaskWithUndo } from "../lib/actions"
 import { Chip } from "./Chip";
 import { Popover } from "./Popover";
 import { ScheduleMenu, PriorityMenu } from "./pickers";
+import { Icon } from "./icons";
 
 const toneClass: Record<string, string> = {
   overdue: "text-warn",
@@ -94,6 +95,10 @@ export function TaskRow({
         </svg>
       </button>
 
+      {meta.icon != null && (
+        <span className="flex shrink-0 items-center text-mute">{meta.icon}</span>
+      )}
+
       {editing ? (
         <input
           autoFocus
@@ -122,7 +127,6 @@ export function TaskRow({
           }}
           className={`min-w-0 flex-1 truncate text-[13.5px] ${checked ? "text-mute line-through" : ""}`}
         >
-          {meta.icon && <span className="mr-1.5">{meta.icon}</span>}
           {task.title}
           {meta.subtitle && <span className="ml-2 font-mono text-[11px] text-faint">{meta.subtitle}</span>}
         </span>
@@ -132,12 +136,12 @@ export function TaskRow({
       <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
         {!synced && (
           <>
-            <RowAction label="Schedule" icon="📅">
+            <RowAction label="Schedule" icon={<Icon name="calendar" size={14} />}>
               {(close) => (
                 <ScheduleMenu now={now} onChange={(d) => rescheduleTask(store, task, d)} close={close} />
               )}
             </RowAction>
-            <RowAction label="Priority" icon="⚑">
+            <RowAction label="Priority" icon={<Icon name="flag" size={14} />}>
               {(close) => <PriorityMenu onChange={(p) => setPriority(store, task, p)} close={close} />}
             </RowAction>
           </>
@@ -148,9 +152,9 @@ export function TaskRow({
             e.stopPropagation();
             deleteTaskWithUndo(store, task);
           }}
-          className="rounded px-1 py-0.5 text-[12px] text-mute hover:text-warn"
+          className="rounded p-1 text-mute hover:text-warn"
         >
-          🗑
+          <Icon name="trash" size={14} />
         </button>
       </span>
 
@@ -204,7 +208,7 @@ function RowAction({
   children,
 }: {
   label: string;
-  icon: string;
+  icon: React.ReactNode;
   children: (close: () => void) => React.ReactNode;
 }) {
   return (
@@ -212,11 +216,7 @@ function RowAction({
       <Popover
         align="right"
         trigger={({ toggle }) => (
-          <button
-            aria-label={label}
-            onClick={toggle}
-            className="rounded px-1 py-0.5 text-[12px] text-mute hover:text-ink"
-          >
+          <button aria-label={label} onClick={toggle} className="rounded p-1 text-mute hover:text-ink">
             {icon}
           </button>
         )}

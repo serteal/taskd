@@ -6,6 +6,7 @@ import { chipParts, humanDue } from "../lib/format";
 import { Chip } from "./Chip";
 import { Popover, PillButton } from "./Popover";
 import { ScheduleMenu, PriorityMenu, LabelMenu, ProjectMenu } from "./pickers";
+import { Icon } from "./icons";
 
 // The single "new task" surface — a modal that replaced the old inline bar.
 // The title field parses quick-add tokens live (#label, p1-3, dates), and the
@@ -141,7 +142,7 @@ export function NewTaskOverlay({
             <Popover
               trigger={({ toggle }) => (
                 <PillButton
-                  icon={<span aria-hidden>📅</span>}
+                  icon={<Icon name="calendar" size={14} />}
                   label={due ? humanDue(due, now).text : "Schedule"}
                   active={!!due}
                   onClick={toggle}
@@ -155,7 +156,7 @@ export function NewTaskOverlay({
             <Popover
               trigger={({ toggle }) => (
                 <PillButton
-                  icon={<span aria-hidden>⚑</span>}
+                  icon={<Icon name="flag" size={14} />}
                   label={priority ? priority.toUpperCase() : "Priority"}
                   active={!!priority}
                   onClick={toggle}
@@ -168,7 +169,7 @@ export function NewTaskOverlay({
             <Popover
               trigger={({ toggle }) => (
                 <PillButton
-                  icon={<span aria-hidden>🏷</span>}
+                  icon={<Icon name="tag" size={14} />}
                   label="Labels"
                   active={labels.length > 0}
                   onClick={() => {
@@ -197,7 +198,7 @@ export function NewTaskOverlay({
           <Popover
             trigger={({ toggle }) => (
               <PillButton
-                icon={<span aria-hidden>📥</span>}
+                icon={<Icon name="inbox" size={14} />}
                 label={
                   <>
                     {project ? chipParts(project).val : "Inbox"}
