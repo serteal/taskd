@@ -8,7 +8,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
-	taskpb "todoapp/gen/task"
+	taskpb "github.com/serteal/taskd/gen/task"
 )
 
 func newRmCmd(a *app) *cobra.Command {

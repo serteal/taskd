@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	taskpb "todoapp/gen/task"
+	taskpb "github.com/serteal/taskd/gen/task"
 )
 
 func mustList(t *testing.T, s *Store, p Page) []*taskpb.Task {

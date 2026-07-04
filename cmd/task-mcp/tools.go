@@ -13,7 +13,7 @@ import (
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	taskpb "todoapp/gen/task"
+	taskpb "github.com/serteal/taskd/gen/task"
 )
 
 // defaultListLimit is how many tasks list_tasks returns when the caller does

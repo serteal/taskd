@@ -18,10 +18,10 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
-	taskpb "todoapp/gen/task"
-	"todoapp/gen/task/taskconnect"
-	"todoapp/internal/server"
-	"todoapp/internal/store"
+	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/gen/task/taskconnect"
+	"github.com/serteal/taskd/internal/server"
+	"github.com/serteal/taskd/internal/store"
 )
 
 // startServer runs the real store+server stack over httptest — the same

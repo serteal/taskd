@@ -33,8 +33,8 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	taskpb "todoapp/gen/task"
-	"todoapp/gen/task/taskconnect"
+	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/gen/task/taskconnect"
 )
 
 const (

@@ -13,8 +13,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	taskpb "todoapp/gen/task"
-	"todoapp/pkg/client"
+	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/pkg/client"
 )
 
 // TestDaemonEndToEnd boots the real daemon — config file, TCP + unix

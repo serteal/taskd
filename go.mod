@@ -1,4 +1,4 @@
-module todoapp
+module github.com/serteal/taskd
 
 go 1.25.0
 

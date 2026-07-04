@@ -13,10 +13,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	taskpb "todoapp/gen/task"
-	"todoapp/gen/task/taskconnect"
-	"todoapp/internal/server"
-	"todoapp/internal/store"
+	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/gen/task/taskconnect"
+	"github.com/serteal/taskd/internal/server"
+	"github.com/serteal/taskd/internal/store"
 )
 
 // newSession serves a real store over a real HTTP server (the pattern from

@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"todoapp/internal/daemon"
+	"github.com/serteal/taskd/internal/daemon"
 )
 
 func main() {

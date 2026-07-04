@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	taskpb "todoapp/gen/task"
+	taskpb "github.com/serteal/taskd/gen/task"
 )
 
 // UpsertResult reports what one UpsertExternal batch did.

@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	taskpb "todoapp/gen/task"
+	taskpb "github.com/serteal/taskd/gen/task"
 )
 
 func newAddCmd(a *app) *cobra.Command {

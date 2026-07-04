@@ -17,7 +17,7 @@ import "google/protobuf/field_mask.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "todoapp/gen/task";
+option go_package = "github.com/serteal/taskd/gen/task";
 
 service TaskService {
   // Creates a local task. The server assigns id, revision, and timestamps.

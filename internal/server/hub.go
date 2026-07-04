@@ -3,7 +3,7 @@ package server
 import (
 	"sync"
 
-	taskpb "todoapp/gen/task"
+	taskpb "github.com/serteal/taskd/gen/task"
 )
 
 // hubBuffer is each watcher's queued-event capacity. A watcher that falls

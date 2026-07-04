@@ -8,8 +8,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	taskpb "todoapp/gen/task"
-	"todoapp/gen/task/taskconnect"
+	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/gen/task/taskconnect"
 )
 
 // resolveTask turns a full id or unique id prefix into the task it names.

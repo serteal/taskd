@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	taskpb "todoapp/gen/task"
+	taskpb "github.com/serteal/taskd/gen/task"
 )
 
 const (

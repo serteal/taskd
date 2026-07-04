@@ -11,8 +11,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	taskpb "todoapp/gen/task"
-	"todoapp/gen/task/taskconnect"
+	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/gen/task/taskconnect"
 )
 
 // icsFakeNow anchors every test; fixtures are written relative to it.

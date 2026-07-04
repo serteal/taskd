@@ -18,10 +18,10 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
-	"todoapp/internal/extension"
-	"todoapp/internal/server"
-	"todoapp/internal/store"
-	"todoapp/internal/webui"
+	"github.com/serteal/taskd/internal/extension"
+	"github.com/serteal/taskd/internal/server"
+	"github.com/serteal/taskd/internal/store"
+	"github.com/serteal/taskd/internal/webui"
 )
 
 type Options struct {

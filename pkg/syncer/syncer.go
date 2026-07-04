@@ -18,9 +18,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	taskpb "todoapp/gen/task"
-	"todoapp/gen/task/taskconnect"
-	"todoapp/pkg/client"
+	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/gen/task/taskconnect"
+	"github.com/serteal/taskd/pkg/client"
 )
 
 // Client dials the daemon from TASKD_ADDR (injected by the daemon's

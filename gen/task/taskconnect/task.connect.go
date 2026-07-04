@@ -19,9 +19,9 @@ import (
 	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
+	task "github.com/serteal/taskd/gen/task"
 	http "net/http"
 	strings "strings"
-	task "todoapp/gen/task"
 )
 
 // This is a compile-time assertion to ensure that this generated file and the connect package are

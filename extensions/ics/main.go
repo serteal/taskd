@@ -20,7 +20,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"todoapp/pkg/syncer"
+	"github.com/serteal/taskd/pkg/syncer"
 )
 
 const configPath = "config.yaml"

@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"todoapp/gen/task/taskconnect"
-	"todoapp/pkg/client"
+	"github.com/serteal/taskd/gen/task/taskconnect"
+	"github.com/serteal/taskd/pkg/client"
 )
 
 // app carries what every subcommand needs: the daemon address, the output

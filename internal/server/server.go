@@ -11,9 +11,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	taskpb "todoapp/gen/task"
-	"todoapp/gen/task/taskconnect"
-	"todoapp/internal/store"
+	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/gen/task/taskconnect"
+	"github.com/serteal/taskd/internal/store"
 )
 
 // updatablePaths are the UpdateTask mask paths; everything else on Task is

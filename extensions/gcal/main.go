@@ -29,9 +29,9 @@ import (
 	"connectrpc.com/connect"
 	"gopkg.in/yaml.v3"
 
-	taskpb "todoapp/gen/task"
-	"todoapp/gen/task/taskconnect"
-	"todoapp/pkg/syncer"
+	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/gen/task/taskconnect"
+	"github.com/serteal/taskd/pkg/syncer"
 )
 
 const configPath = "config.yaml"

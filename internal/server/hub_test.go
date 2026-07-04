@@ -3,7 +3,7 @@ package server
 import (
 	"testing"
 
-	taskpb "todoapp/gen/task"
+	taskpb "github.com/serteal/taskd/gen/task"
 )
 
 func TestHubFanout(t *testing.T) {

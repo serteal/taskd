@@ -7,7 +7,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
-	taskpb "todoapp/gen/task"
+	taskpb "github.com/serteal/taskd/gen/task"
 )
 
 func newWatchCmd(a *app) *cobra.Command {

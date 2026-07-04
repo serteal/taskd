@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"todoapp/gen/task/taskconnect"
+	"github.com/serteal/taskd/gen/task/taskconnect"
 )
 
 // DefaultTarget is where clients look for the daemon when TASKD_ADDR is

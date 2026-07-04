@@ -15,8 +15,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"todoapp/gen/task/taskconnect"
-	"todoapp/pkg/client"
+	"github.com/serteal/taskd/gen/task/taskconnect"
+	"github.com/serteal/taskd/pkg/client"
 )
 
 func main() {

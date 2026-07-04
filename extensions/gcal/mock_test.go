@@ -8,8 +8,8 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
-	taskpb "todoapp/gen/task"
-	"todoapp/gen/task/taskconnect"
+	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/gen/task/taskconnect"
 )
 
 // gcalFakeNow is a Wednesday noon (the week's Monday is 2026-07-06), so events
