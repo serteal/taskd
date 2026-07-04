@@ -14,6 +14,7 @@ See [DESIGN.md](DESIGN.md) for the rationale and
 ## Quick start
 
 ```sh
+git clone https://github.com/serteal/taskd && cd taskd
 make build-web   # builds ./taskd (web UI embedded), ./task, ./task-mcp
 ./taskd &        # serves http://127.0.0.1:7517, data in ~/.taskd
 open http://127.0.0.1:7517   # the web app — same port as the API
@@ -47,7 +48,8 @@ daemon discovers. An extension has up to two halves, both optional:
 
 - a **syncer** (any-language binary) that mirrors a source into tasks via
   the public `UpsertExternalTasks` RPC — it's an ordinary API client, not a
-  plugin with special access;
+  plugin with special access. A Go syncer imports the SDK at
+  `github.com/serteal/taskd/pkg/syncer`;
 - a **web bundle** the app loads at runtime to present those tasks (row
   badges, a detail section) or add a whole view (e.g. a calendar).
 
@@ -77,6 +79,7 @@ pkg/client/            dialing helper every Go client uses
 pkg/syncer/            public Go SDK for writing syncers
 web/                   web frontend (React + TS + connect-es, Tailwind)
 web/extension-api/     the TS contract extensions build their frontend against
+web/testkit/           shared Playwright + vitest kit (core and extensions test with it)
 extensions/            in-tree extensions (ics, gcal, github)
 cmd/taskd, cmd/task, cmd/task-mcp
 ```
@@ -104,3 +107,7 @@ Conventions that matter:
   `labels/notes/user_data`. No code may cross that line (DESIGN.md §5).
 - **Only the store touches SQL; everything else speaks the API.** Extensions
   included — a syncer has no more access than any other client.
+
+## License
+
+[MIT](LICENSE).
