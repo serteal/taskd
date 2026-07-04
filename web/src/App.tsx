@@ -220,6 +220,7 @@ export default function App() {
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 onOpen={(id) => (setSelectedId(id), setOpenId(id))}
+                onManualReorder={() => setSort("manual")}
               />
             )}
           </div>

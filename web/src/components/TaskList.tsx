@@ -80,6 +80,7 @@ export function TaskList({
   selectedId,
   onSelect,
   onOpen,
+  onManualReorder,
 }: {
   tasks: Task[];
   view: View;
@@ -88,11 +89,13 @@ export function TaskList({
   selectedId: string | null;
   onSelect: (id: string) => void;
   onOpen: (id: string) => void;
+  /** Called after a reorder that happened while not already in manual sort. */
+  onManualReorder: () => void;
 }) {
   const store = useStore();
   const snap = useSnapshot();
   const [leaving, setLeaving] = useState<Set<string>>(new Set());
-  // In manual sort, the row a drag is hovering over and which edge.
+  // The row a drag is hovering over and which edge (for the insert indicator).
   const [dropAt, setDropAt] = useState<{ id: string; below: boolean } | null>(null);
 
   if (tasks.length === 0) {
@@ -100,7 +103,7 @@ export function TaskList({
       <div className="px-3 py-16 text-center text-[13px] text-mute">
         {EMPTY_COPY[view.kind] ?? "Nothing here."}
         <div className="mt-1 font-mono text-[11px] text-faint">
-          press <kbd className="rounded border border-line px-1">/</kbd> to add a task
+          press <kbd className="rounded border border-line px-1">q</kbd> to add a task
         </div>
       </div>
     );
@@ -121,9 +124,32 @@ export function TaskList({
     }, 250);
   };
 
+  // Reorder within the current display sequence. Renumbers user_data.order to
+  // the resulting order (only changed rows are written); starting from a
+  // non-manual sort, this also switches the list to manual so the new order
+  // sticks. `seq` is the order the user currently SEES (grouped-flattened or
+  // the manual list) so the move lands where they dropped it.
+  const applyReorder = (seq: Task[], draggedId: string, targetId: string, below: boolean) => {
+    if (draggedId === targetId) return;
+    const without = seq.filter((t) => t.id !== draggedId);
+    let idx = without.findIndex((t) => t.id === targetId);
+    if (idx === -1) return;
+    if (below) idx += 1;
+    for (const u of computeReorder(seq, draggedId, idx)) {
+      const t = seq.find((x) => x.id === u.id);
+      if (!t) continue;
+      store
+        .update(u.id, {
+          userData: { ...(t.userData ?? {}), order: u.order },
+          expectedRevision: t.revision,
+        })
+        .catch(() => {});
+    }
+    if (sort !== "manual") onManualReorder();
+  };
+
   const row = (t: Task) => (
     <TaskRow
-      key={t.id}
       task={t}
       now={now}
       selected={t.id === selectedId}
@@ -135,59 +161,42 @@ export function TaskList({
     />
   );
 
-  // --- manual sort: flat list with drag-to-reorder ---
-  if (sort === "manual") {
-    const applyReorder = (draggedId: string, targetId: string, below: boolean) => {
-      if (draggedId === targetId) return;
-      const without = tasks.filter((t) => t.id !== draggedId);
-      let idx = without.findIndex((t) => t.id === targetId);
-      if (idx === -1) return;
-      if (below) idx += 1;
-      for (const u of computeReorder(tasks, draggedId, idx)) {
-        const t = tasks.find((x) => x.id === u.id);
-        if (!t) continue;
-        store
-          .update(u.id, {
-            userData: { ...(t.userData ?? {}), order: u.order },
-            expectedRevision: t.revision,
-          })
-          .catch(() => {});
+  // A row wrapped as a reorder drop target. `seq` is the full display order.
+  const dropRow = (t: Task, seq: Task[]) => (
+    <div
+      key={t.id}
+      onDragOver={(e) => {
+        e.preventDefault();
+        const r = e.currentTarget.getBoundingClientRect();
+        setDropAt({ id: t.id, below: e.clientY > r.top + r.height / 2 });
+      }}
+      onDragLeave={() => setDropAt((d) => (d?.id === t.id ? null : d))}
+      onDrop={(e) => {
+        e.preventDefault();
+        const id = readTaskId(e.dataTransfer);
+        const below = dropAt?.id === t.id ? dropAt.below : false;
+        setDropAt(null);
+        if (id) applyReorder(seq, id, t.id, below);
+      }}
+      className={
+        dropAt?.id === t.id
+          ? dropAt.below
+            ? "border-b-2 border-b-accent"
+            : "border-t-2 border-t-accent"
+          : ""
       }
-    };
-    return (
-      <div>
-        {tasks.map((t) => (
-          <div
-            key={t.id}
-            onDragOver={(e) => {
-              e.preventDefault();
-              const r = e.currentTarget.getBoundingClientRect();
-              setDropAt({ id: t.id, below: e.clientY > r.top + r.height / 2 });
-            }}
-            onDragLeave={() => setDropAt((d) => (d?.id === t.id ? null : d))}
-            onDrop={(e) => {
-              e.preventDefault();
-              const id = readTaskId(e.dataTransfer);
-              const below = dropAt?.id === t.id ? dropAt.below : false;
-              setDropAt(null);
-              if (id) applyReorder(id, t.id, below);
-            }}
-            className={
-              dropAt?.id === t.id
-                ? dropAt.below
-                  ? "border-b-2 border-b-accent"
-                  : "border-t-2 border-t-accent"
-                : ""
-            }
-          >
-            {row(t)}
-          </div>
-        ))}
-      </div>
-    );
+    >
+      {row(t)}
+    </div>
+  );
+
+  // Manual: one flat, reorderable list.
+  if (sort === "manual") {
+    return <div>{tasks.map((t) => dropRow(t, tasks))}</div>;
   }
 
-  // --- default: grouped by time pressure ---
+  // Otherwise: grouped by time pressure, but still reorderable — dropping a
+  // row onto another switches the list to manual (applyReorder does it).
   const grouped = new Map<string, Task[]>();
   for (const t of tasks) {
     const g = groupOf(t, now);
@@ -195,6 +204,7 @@ export function TaskList({
     if (arr) arr.push(t);
     else grouped.set(g, [t]);
   }
+  const seq = GROUPS.flatMap((g) => grouped.get(g) ?? []);
 
   return (
     <div>
@@ -208,7 +218,7 @@ export function TaskList({
             {g}
             <span className="text-faint">{grouped.get(g)!.length}</span>
           </h2>
-          {grouped.get(g)!.map((t) => row(t))}
+          {grouped.get(g)!.map((t) => dropRow(t, seq))}
         </section>
       ))}
     </div>
