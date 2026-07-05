@@ -157,7 +157,7 @@ func expandICSRule(ev *ics.VEvent, rule string, start, windowStart, windowEnd ti
 	if len(occs) > icsMaxOccurrences {
 		occs = occs[:icsMaxOccurrences]
 	}
-	exdates, err := ev.GetExDates()
+	exdates, err := icsExDates(ev)
 	if err != nil {
 		return nil, fmt.Errorf("parsing EXDATE: %w", err)
 	}
@@ -171,6 +171,51 @@ func expandICSRule(ev *ics.VEvent, rule string, start, windowStart, windowEnd ti
 		}
 	}
 	return kept, nil
+}
+
+// icsExDates extracts EXDATE exclusion instants. golang-ical v0.3.4 has no
+// VEvent.GetExDates(), so we read the raw EXDATE properties: their values are
+// comma-separated date-times, optionally TZID-qualified or a bare DATE.
+// expandICSRule matches by instant (time.Equal), so the zone only has to
+// resolve the instant correctly.
+func icsExDates(ev *ics.VEvent) ([]time.Time, error) {
+	var out []time.Time
+	for i := range ev.Properties {
+		p := ev.Properties[i]
+		if p.IANAToken != string(ics.ComponentPropertyExdate) {
+			continue
+		}
+		loc := time.UTC
+		if tz := p.ICalParameters["TZID"]; len(tz) > 0 {
+			if l, err := time.LoadLocation(tz[0]); err == nil {
+				loc = l
+			}
+		}
+		for _, v := range strings.Split(p.Value, ",") {
+			if v = strings.TrimSpace(v); v == "" {
+				continue
+			}
+			t, err := parseICSDate(v, loc)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// parseICSDate parses an iCal DATE or DATE-TIME value. A trailing "Z" is UTC; a
+// bare date-time is interpreted in loc (the property's TZID, else UTC).
+func parseICSDate(v string, loc *time.Location) (time.Time, error) {
+	switch {
+	case strings.HasSuffix(v, "Z"):
+		return time.ParseInLocation("20060102T150405Z", v, time.UTC)
+	case strings.Contains(v, "T"):
+		return time.ParseInLocation("20060102T150405", v, loc)
+	default:
+		return time.ParseInLocation("20060102", v, loc)
+	}
 }
 
 func icsTask(ev *ics.VEvent, start, end time.Time, occurrence bool, now time.Time) (*taskpb.ExternalTask, error) {
