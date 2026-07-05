@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+// Package admin is taskd's daemon-administration API — deliberately kept
+// separate from the frozen task.TaskService. task.TaskService is the task
+// data plane and is meant to be frozen; admin is the operational control
+// plane, where clients change how the daemon itself runs. Today that means
+// enabling and disabling extensions; it is meant to grow to also carry
+// daemon settings and user preferences. Keeping the two apart means the task
+// contract never has to absorb operational churn.
+//
+// VERSIONING: like task, this package is intentionally unversioned and
+// evolves only additively — new fields, new RPCs — which proto3 clients
+// ignore when unknown. Nothing is ever renamed, renumbered, or removed.
+package admin;
+
+option go_package = "github.com/serteal/taskd/gen/admin";
+
+service AdminService {
+  // Lists every installed extension with its capabilities and whether it is
+  // currently enabled. Disabled extensions are still reported (that is how a
+  // client offers to re-enable one); they are simply not supervised and not
+  // served.
+  rpc ListExtensions(ListExtensionsRequest) returns (ListExtensionsResponse);
+
+  // Enables or disables one extension by name. Disabling stops its syncer
+  // process and stops serving its web bundle; enabling reverses both. The
+  // change is persisted to the daemon's config and applied to the running
+  // daemon. See restart_required.
+  rpc SetExtensionEnabled(SetExtensionEnabledRequest) returns (SetExtensionEnabledResponse);
+}
+
+// ExtensionInfo is one installed extension's identity, capabilities, and
+// current state.
+message ExtensionInfo {
+  // The extension's folder name — its stable identifier.
+  string name = 1;
+  // Has a syncer (a daemon-half process) the daemon supervises when enabled.
+  bool has_syncer = 2;
+  // Has a web/ bundle, served at /ext/<name>/ when enabled.
+  bool has_web = 3;
+  // Currently enabled: supervised and served. Disabled extensions stay
+  // installed but dormant.
+  bool enabled = 4;
+}
+
+message ListExtensionsRequest {}
+
+message ListExtensionsResponse {
+  repeated ExtensionInfo extensions = 1;
+}
+
+message SetExtensionEnabledRequest {
+  // Must name an installed extension; unknown names are NOT_FOUND.
+  string name = 1;
+  bool enabled = 2;
+}
+
+message SetExtensionEnabledResponse {
+  // True when the change was persisted but needs a daemon restart to take
+  // full effect; false when the daemon hot-applied it (the normal case).
+  bool restart_required = 1;
+}

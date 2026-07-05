@@ -18,6 +18,7 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
+	"github.com/serteal/taskd/internal/adminserver"
 	"github.com/serteal/taskd/internal/extension"
 	"github.com/serteal/taskd/internal/server"
 	"github.com/serteal/taskd/internal/store"
@@ -61,16 +62,27 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+	disabled := make(map[string]bool, len(cfg.Extensions.Disabled))
+	for _, name := range cfg.Extensions.Disabled {
+		disabled[name] = true
+	}
+	host := extension.NewHost(exts, cfg.Listen, disabled)
 
 	mux := http.NewServeMux()
 	path, handler := server.New(st).Handler()
 	mux.Handle(path, handler)
+	// Admin API: enabling/disabling extensions (and, later, daemon settings).
+	// A separate service from the frozen task.TaskService by design.
+	adminPath, adminHandler := adminserver.New(host, func(names []string) error {
+		return saveFileConfig(dir, FileConfig{Extensions: ExtensionsConfig{Disabled: names}})
+	}).Handler()
+	mux.Handle(adminPath, adminHandler)
 	// Health is transport-level, not part of the frozen proto API.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
 	// Extension web bundles + index, for the frontend's loader.
-	mux.Handle("/ext/", extension.Handler(exts))
+	mux.Handle("/ext/", host.Handler())
 	// The web UI (or a pointer to how to build it); longer API patterns win.
 	mux.Handle("/", webui.Handler())
 
@@ -99,16 +111,10 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	// Extension syncers are separate processes talking back through the
-	// public API — supervised here purely for operational convenience.
-	for _, ext := range exts {
-		if len(ext.Syncer) > 0 {
-			go extension.Supervise(ctx, ext, cfg.Listen)
-			log.Printf("taskd: extension %s: supervising syncer", ext.Name)
-		}
-		if ext.Web {
-			log.Printf("taskd: extension %s: serving web bundle at /ext/%s/", ext.Name, ext.Name)
-		}
-	}
+	// public API — supervised here purely for operational convenience. The
+	// host skips disabled extensions and can start/stop them at runtime when
+	// the admin API toggles one.
+	host.Start(ctx)
 
 	select {
 	case <-ctx.Done():

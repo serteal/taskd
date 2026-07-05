@@ -16,6 +16,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -24,6 +25,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -137,31 +141,204 @@ func prefixLines(name string, r io.Reader) {
 	}
 }
 
-// Handler serves /ext/index.json (which extensions have a web half) and
-// /ext/<name>/* from each extension's web/ folder only.
-func Handler(exts []Extension) http.Handler {
+// ErrUnknownExtension is returned by Host.SetEnabled for a name that is not
+// an installed extension.
+var ErrUnknownExtension = errors.New("unknown extension")
+
+// Info is one extension's identity, capabilities, and current enabled state,
+// as reported by Host.List for the admin API.
+type Info struct {
+	Name      string
+	HasSyncer bool
+	HasWeb    bool
+	Enabled   bool
+}
+
+// Host owns the runtime side of the extensions: supervising each enabled
+// extension's syncer and serving each enabled extension's web bundle. The
+// enabled set is adjustable at runtime — disabling an extension stops its
+// syncer and stops serving its bundle, enabling reverses both, with no
+// daemon restart. A disabled extension stays installed but dormant; the
+// disabled set persists in config (see daemon.saveFileConfig).
+type Host struct {
+	addr string                  // daemon listen address, passed to syncers as TASKD_ADDR
+	exts []Extension             // every scanned extension, in scan order
+	web  map[string]http.Handler // name -> web/ file server, for extensions with a web half
+
+	mu       sync.Mutex
+	ctx      context.Context               // base context for supervision; set by Start
+	disabled map[string]bool               // names left dormant (may include not-installed names)
+	cancels  map[string]context.CancelFunc // name -> running syncer's canceller
+}
+
+// NewHost builds a Host over the scanned extensions. addr is the daemon's
+// listen address (handed to syncers as TASKD_ADDR); disabled is the set of
+// extension names to keep dormant. Nothing is supervised until Start.
+func NewHost(exts []Extension, addr string, disabled map[string]bool) *Host {
+	h := &Host{
+		addr:     addr,
+		exts:     exts,
+		web:      make(map[string]http.Handler),
+		disabled: make(map[string]bool, len(disabled)),
+		cancels:  make(map[string]context.CancelFunc),
+	}
+	for name := range disabled {
+		h.disabled[name] = true
+	}
+	for _, ext := range exts {
+		if ext.Web {
+			// Only web/ is served; config and credentials elsewhere stay private.
+			h.web[ext.Name] = http.FileServerFS(os.DirFS(filepath.Join(ext.Dir, "web")))
+		}
+	}
+	return h
+}
+
+// Start begins supervising every enabled extension's syncer, deriving each
+// from ctx so canceling ctx stops them all. It also records ctx so newly
+// enabled extensions can be supervised later via SetEnabled.
+func (h *Host) Start(ctx context.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ctx = ctx
+	for _, ext := range h.exts {
+		if h.disabled[ext.Name] {
+			continue
+		}
+		h.startLocked(ext)
+		if ext.Web {
+			log.Printf("taskd: extension %s: serving web bundle at /ext/%s/", ext.Name, ext.Name)
+		}
+	}
+}
+
+// SetEnabled turns one extension on or off in the running daemon, applying
+// the change immediately: enabling starts its syncer and (re)serves its
+// bundle, disabling stops the syncer and stops serving. It is a no-op if the
+// extension is already in the requested state. An unknown name is
+// ErrUnknownExtension.
+func (h *Host) SetEnabled(name string, enable bool) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ext, ok := h.find(name)
+	if !ok {
+		return ErrUnknownExtension
+	}
+	if enable == !h.disabled[name] {
+		return nil // already in the requested state
+	}
+	if enable {
+		delete(h.disabled, name)
+		h.startLocked(ext)
+	} else {
+		h.disabled[name] = true
+		h.stopLocked(name)
+	}
+	return nil
+}
+
+// List reports every installed extension with its capabilities and current
+// enabled state, in scan order.
+func (h *Host) List() []Info {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]Info, 0, len(h.exts))
+	for _, ext := range h.exts {
+		out = append(out, Info{
+			Name:      ext.Name,
+			HasSyncer: len(ext.Syncer) > 0,
+			HasWeb:    ext.Web,
+			Enabled:   !h.disabled[ext.Name],
+		})
+	}
+	return out
+}
+
+// Disabled returns the current disabled set, sorted, for persistence. It
+// includes any names that were disabled in config but are not installed, so
+// round-tripping the config never silently drops them.
+func (h *Host) Disabled() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]string, 0, len(h.disabled))
+	for name := range h.disabled {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// startLocked supervises ext's syncer under a fresh child of the base
+// context, if it has a syncer and isn't already running. Caller holds mu.
+func (h *Host) startLocked(ext Extension) {
+	if len(ext.Syncer) == 0 || h.ctx == nil {
+		return
+	}
+	if _, running := h.cancels[ext.Name]; running {
+		return
+	}
+	ctx, cancel := context.WithCancel(h.ctx)
+	h.cancels[ext.Name] = cancel
+	go Supervise(ctx, ext, h.addr)
+	log.Printf("taskd: extension %s: supervising syncer", ext.Name)
+}
+
+// stopLocked cancels ext's supervision, killing its syncer process. Caller
+// holds mu.
+func (h *Host) stopLocked(name string) {
+	if cancel, ok := h.cancels[name]; ok {
+		cancel()
+		delete(h.cancels, name)
+		log.Printf("taskd: extension %s: stopped syncer", name)
+	}
+}
+
+func (h *Host) find(name string) (Extension, bool) {
+	for _, ext := range h.exts {
+		if ext.Name == name {
+			return ext, true
+		}
+	}
+	return Extension{}, false
+}
+
+// Handler serves /ext/index.json (the enabled extensions that have a web
+// half) and /ext/<name>/* from each enabled extension's web/ folder only.
+// Disabled extensions are absent from the index and 404 on their prefix.
+func (h *Host) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Extensions iterate fast; never let a browser cache a stale bundle.
+		w.Header().Set("Cache-Control", "no-cache")
+		if r.URL.Path == "/ext/index.json" {
+			h.serveIndex(w)
+			return
+		}
+		name, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/ext/"), "/")
+		h.mu.Lock()
+		srv, served := h.web[name]
+		enabled := !h.disabled[name]
+		h.mu.Unlock()
+		if !served || !enabled {
+			http.NotFound(w, r)
+			return
+		}
+		http.StripPrefix("/ext/"+name+"/", srv).ServeHTTP(w, r)
+	})
+}
+
+func (h *Host) serveIndex(w http.ResponseWriter) {
 	type entry struct {
 		Name string `json:"name"`
 	}
 	index := []entry{}
-	mux := http.NewServeMux()
-	for _, ext := range exts {
-		if !ext.Web {
-			continue
+	h.mu.Lock()
+	for _, ext := range h.exts {
+		if ext.Web && !h.disabled[ext.Name] {
+			index = append(index, entry{Name: ext.Name})
 		}
-		index = append(index, entry{Name: ext.Name})
-		prefix := "/ext/" + ext.Name + "/"
-		mux.Handle(prefix, http.StripPrefix(prefix,
-			http.FileServerFS(os.DirFS(filepath.Join(ext.Dir, "web")))))
 	}
-	indexJSON, _ := json.Marshal(index)
-	mux.HandleFunc("/ext/index.json", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(indexJSON)
-	})
-	// Extensions iterate fast; never let a browser cache a stale bundle.
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache")
-		mux.ServeHTTP(w, r)
-	})
+	h.mu.Unlock()
+	b, _ := json.Marshal(index)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
 }
