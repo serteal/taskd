@@ -48,26 +48,24 @@ test.describe("detail — due date", () => {
   });
 });
 
-test.describe("row hover actions", () => {
-  test("Schedule menu reschedules the row", async ({ page, api }) => {
-    await seed(api, [{ title: "Hover sched" }]);
-    const r = row(page, "Hover sched");
-    await r.hover();
-    await r.getByRole("button", { name: "Schedule" }).click();
+test.describe("row context-menu actions", () => {
+  test("Schedule submenu reschedules the row", async ({ page, api }) => {
+    await seed(api, [{ title: "Ctx sched" }]);
+    await row(page, "Ctx sched").click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Schedule" }).click();
     await page.getByRole("button", { name: "Tomorrow" }).click();
 
     await expect(toast(page, "Scheduled")).toBeVisible();
-    await expect.poll(() => dueOf(api, "Hover sched")).toBeTruthy();
+    await expect.poll(() => dueOf(api, "Ctx sched")).toBeTruthy();
   });
 
-  test("Priority menu sets the priority label", async ({ page, api }) => {
-    await seed(api, [{ title: "Hover prio" }]);
-    const r = row(page, "Hover prio");
-    await r.hover();
-    await r.getByRole("button", { name: "Priority" }).click();
+  test("Priority submenu sets the priority label", async ({ page, api }) => {
+    await seed(api, [{ title: "Ctx prio" }]);
+    await row(page, "Ctx prio").click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Priority" }).click();
     await page.getByRole("button", { name: "Priority 1" }).click();
 
-    await expect.poll(() => labelsOf(api, "Hover prio")).toContain("p1");
+    await expect.poll(() => labelsOf(api, "Ctx prio")).toContain("p1");
   });
 });
 

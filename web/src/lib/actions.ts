@@ -1,7 +1,9 @@
+import type { JsonObject } from "@bufbuild/protobuf";
 import type { Task } from "../gen/task/task_pb";
 import type { TaskStore } from "./store";
 import { notify } from "./notify";
 import { tsDate } from "./format";
+import { planTodayInterval } from "./timebox";
 
 // Undoable task operations, shared by the command palette, row hover actions,
 // bulk bar, and keyboard. Each performs the change optimistically and shows a
@@ -55,6 +57,26 @@ export function setPriority(store: TaskStore, t: Task, priority: string | null):
 export function addLabel(store: TaskStore, t: Task, label: string): void {
   if (t.labels.includes(label)) return;
   store.update(t.id, { labels: [...t.labels, label], expectedRevision: t.revision }).catch(() => {});
+}
+
+/** Timeboxes a task for today without dragging: writes user_data.timebox at
+ *  the next round half-hour for 60 min. Merges the freshest user_data and
+ *  writes WITHOUT expectedRevision — user_data is single-writer, so
+ *  last-write-wins avoids 409s against the watch echo (same rule the gcal rail
+ *  uses). The calendar rail renders the block. */
+export function planToday(store: TaskStore, t: Task, now: Date): void {
+  const iv = planTodayInterval(now);
+  const prev = t.userData ?? null;
+  const userData: JsonObject = {
+    ...(t.userData ?? {}),
+    timebox: { start: iv.start.toISOString(), end: iv.end.toISOString() },
+  };
+  store.update(t.id, { userData }).catch(() => {});
+  notify.toast({
+    kind: "success",
+    message: `Planned “${short(t.title)}” for today`,
+    action: { label: "Undo", onClick: () => void store.update(t.id, { userData: prev }).catch(() => {}) },
+  });
 }
 
 /** Sets/replaces the single "project:" label, or clears it (move to Inbox). */

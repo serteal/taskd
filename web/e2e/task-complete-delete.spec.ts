@@ -27,12 +27,12 @@ test.describe("complete & delete", () => {
     expect((await api.listActive()).map((t) => t.title)).toEqual(["Task B"]);
   });
 
-  test("hover delete removes the row with an undo toast", async ({ page, api }) => {
+  test("context-menu delete removes the row with an undo toast", async ({ page, api }) => {
     await seed(api, [{ title: "Task A" }]);
     await expect(rows(page)).toHaveCount(1);
 
-    await row(page, "Task A").hover();
-    await row(page, "Task A").getByRole("button", { name: "Delete task" }).click();
+    await row(page, "Task A").click({ button: "right" });
+    await page.getByRole("menu", { name: "Task actions" }).getByRole("menuitem", { name: "Delete" }).click();
 
     await expect(rows(page)).toHaveCount(0);
     await expect(toast(page, "Deleted")).toBeVisible();

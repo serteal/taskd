@@ -1,12 +1,13 @@
 import type { Task } from "../gen/task/task_pb";
 import { humanDue, tsDate } from "../lib/format";
+import { getTimebox, fmtClock, fmtTimeboxRange } from "../lib/timebox";
 import { registry } from "../lib/extensions";
 import { setTaskDrag } from "../lib/dnd";
 import { useStore } from "../lib/hooks";
-import { rescheduleTask, setPriority, deleteTaskWithUndo } from "../lib/actions";
+import { rescheduleTask } from "../lib/actions";
 import { Chip } from "./Chip";
 import { Popover } from "./Popover";
-import { ScheduleMenu, PriorityMenu } from "./pickers";
+import { ScheduleMenu } from "./pickers";
 import { Icon } from "./icons";
 
 const toneClass: Record<string, string> = {
@@ -30,6 +31,7 @@ export function TaskRow({
   onStartEdit,
   onRename,
   onEndEdit,
+  onContextMenu,
 }: {
   task: Task;
   now: Date;
@@ -48,12 +50,17 @@ export function TaskRow({
   onStartEdit: () => void;
   onRename: (title: string) => void;
   onEndEdit: () => void;
+  /** Open the row's context menu at the cursor. */
+  onContextMenu?: (x: number, y: number) => void;
 }) {
   const store = useStore();
   const due = tsDate(task.dueTime);
   const dueInfo = due ? humanDue(due, now) : undefined;
   const meta = registry.presenterFor(task)?.rowMeta?.(task) ?? {};
   const synced = task.source !== "";
+  // A user-owned timebox surfaces as a quiet planned-time chip (non-synced
+  // only; synced rows carry their source's own time).
+  const timebox = !synced ? getTimebox(task) : undefined;
 
   return (
     <div
@@ -62,6 +69,11 @@ export function TaskRow({
       onDragStart={(e) => setTaskDrag(e.dataTransfer, task.id)}
       onMouseEnter={onSelect}
       onClick={(e) => onActivate({ meta: e.metaKey || e.ctrlKey, shift: e.shiftKey })}
+      onContextMenu={(e) => {
+        if (!onContextMenu || editing) return;
+        e.preventDefault();
+        onContextMenu(e.clientX, e.clientY);
+      }}
       className={`group relative flex cursor-pointer items-center gap-2.5 border-b border-line/70 px-3 py-[7px] ${
         bulkSelected
           ? "bg-accent/[.08]"
@@ -132,34 +144,20 @@ export function TaskRow({
         </span>
       )}
 
-      {/* Hover action cluster (replaces the chips while hovering). */}
-      <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
-        {!synced && (
-          <>
-            <RowAction label="Schedule" icon={<Icon name="calendar" size={14} />}>
-              {(close) => (
-                <ScheduleMenu now={now} onChange={(d) => rescheduleTask(store, task, d)} close={close} />
-              )}
-            </RowAction>
-            <RowAction label="Priority" icon={<Icon name="flag" size={14} />}>
-              {(close) => <PriorityMenu onChange={(p) => setPriority(store, task, p)} close={close} />}
-            </RowAction>
-          </>
+      {/* Meta chips — always visible; hover no longer swaps them out. Row
+          actions (schedule, priority, label, delete) live in the right-click
+          context menu instead. */}
+      <span className="hidden shrink-0 items-center gap-1 sm:flex">
+        {timebox && (
+          <span
+            data-testid="row-timebox"
+            title={`Planned ${fmtTimeboxRange(timebox)}`}
+            className="inline-flex items-center gap-0.5 rounded-full border border-accent/30 bg-accent/[.06] px-1.5 py-px font-mono text-[11px] leading-4 text-accent"
+          >
+            <Icon name="clock" size={11} />
+            {fmtClock(timebox.start)}
+          </span>
         )}
-        <button
-          aria-label="Delete task"
-          onClick={(e) => {
-            e.stopPropagation();
-            deleteTaskWithUndo(store, task);
-          }}
-          className="rounded p-1 text-mute hover:text-warn"
-        >
-          <Icon name="trash" size={14} />
-        </button>
-      </span>
-
-      {/* Chips (hidden while hovering). */}
-      <span className="hidden shrink-0 gap-1 group-hover:!hidden sm:flex">
         {(meta.extraChips ?? []).map((l) => (
           <Chip key={`x-${l}`} label={l} />
         ))}
@@ -198,31 +196,5 @@ export function TaskRow({
         </span>
       )}
     </div>
-  );
-}
-
-// A small hover-cluster icon button that opens a picker popover.
-function RowAction({
-  label,
-  icon,
-  children,
-}: {
-  label: string;
-  icon: React.ReactNode;
-  children: (close: () => void) => React.ReactNode;
-}) {
-  return (
-    <span onClick={(e) => e.stopPropagation()}>
-      <Popover
-        align="right"
-        trigger={({ toggle }) => (
-          <button aria-label={label} onClick={toggle} className="rounded p-1 text-mute hover:text-ink">
-            {icon}
-          </button>
-        )}
-      >
-        {children}
-      </Popover>
-    </span>
   );
 }

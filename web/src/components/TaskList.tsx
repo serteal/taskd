@@ -5,8 +5,10 @@ import { dayDiff, tsDate } from "../lib/format";
 import { matchesView, type SortMode, type View } from "../lib/views";
 import { computeReorder, taskOrder } from "../lib/reorder";
 import { readTaskId } from "../lib/dnd";
-import { completeTask } from "../lib/actions";
+import { completeTask, rescheduleMany } from "../lib/actions";
 import { TaskRow } from "./TaskRow";
+import { Popover } from "./Popover";
+import { ScheduleMenu } from "./pickers";
 
 // Grouping encodes time pressure, nothing else: Overdue → Today → Tomorrow →
 // This week → Later → No date. Within a group: soonest due first, then
@@ -87,6 +89,7 @@ export function TaskList({
   onStartEdit,
   onRename,
   onEndEdit,
+  onContextMenu,
 }: {
   tasks: Task[];
   view: View;
@@ -102,6 +105,8 @@ export function TaskList({
   onStartEdit: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onEndEdit: () => void;
+  /** Open a row's context menu at the cursor. */
+  onContextMenu?: (id: string, x: number, y: number) => void;
 }) {
   const store = useStore();
   const snap = useSnapshot();
@@ -172,6 +177,7 @@ export function TaskList({
       onStartEdit={() => onStartEdit(t.id)}
       onRename={(title) => onRename(t.id, title)}
       onEndEdit={onEndEdit}
+      onContextMenu={onContextMenu ? (x, y) => onContextMenu(t.id, x, y) : undefined}
     />
   );
 
@@ -231,6 +237,32 @@ export function TaskList({
           >
             {g}
             <span className="text-faint">{grouped.get(g)!.length}</span>
+            {/* Overdue gets a one-click "clear my overdue": batch-reschedule
+                every overdue task in view to a chosen day. */}
+            {g === "Overdue" && (
+              <span className="ml-auto self-center normal-case tracking-normal">
+                <Popover
+                  align="right"
+                  trigger={({ toggle }) => (
+                    <button
+                      onClick={toggle}
+                      aria-label="Reschedule overdue tasks"
+                      className="rounded border border-warn/40 px-1.5 py-px text-[10px] font-medium text-warn hover:bg-warn/10"
+                    >
+                      Reschedule
+                    </button>
+                  )}
+                >
+                  {(close) => (
+                    <ScheduleMenu
+                      now={now}
+                      onChange={(d) => rescheduleMany(store, grouped.get("Overdue") ?? [], d)}
+                      close={close}
+                    />
+                  )}
+                </Popover>
+              </span>
+            )}
           </h2>
           {grouped.get(g)!.map((t) => dropRow(t, seq))}
         </section>

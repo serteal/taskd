@@ -17,6 +17,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { ExtensionBoundary } from "./components/ExtensionBoundary";
 import { ShortcutsHelp } from "./components/ShortcutsHelp";
 import { BulkBar } from "./components/BulkBar";
+import { ContextMenu, TaskContextMenu } from "./components/ContextMenu";
 import { completeMany } from "./lib/actions";
 
 const SORT_MODES: SortMode[] = ["smart", "manual", "created", "title"];
@@ -39,6 +40,8 @@ export default function App() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastClicked, setLastClicked] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // Right-click context menu: which task, anchored at the cursor.
+  const [ctxMenu, setCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const regVersion = useRegistry();
 
   // Which registered panels are open. Seeded from each panel's defaultOpen
@@ -431,6 +434,10 @@ export default function App() {
                   }
                 }}
                 onEndEdit={() => setEditingId(null)}
+                onContextMenu={(id, x, y) => {
+                  setSelectedId(id);
+                  setCtxMenu({ id, x, y });
+                }}
               />
             )}
           </div>
@@ -471,6 +478,33 @@ export default function App() {
           ⌘K commands · q add · j/k move · x done · ? help
         </button>
       </footer>
+
+      {ctxMenu &&
+        (() => {
+          const t = snap.tasks.get(ctxMenu.id);
+          if (!t) return null;
+          return (
+            <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={() => setCtxMenu(null)}>
+              {(close) => (
+                <TaskContextMenu
+                  task={t}
+                  now={now}
+                  store={store}
+                  labelOptions={labelOptions}
+                  onOpen={() => {
+                    openTaskById(t.id);
+                    close();
+                  }}
+                  onEdit={() => {
+                    setEditingId(t.id);
+                    close();
+                  }}
+                  close={close}
+                />
+              )}
+            </ContextMenu>
+          );
+        })()}
 
       {adding && <NewTaskOverlay now={now} initial={adding} onClose={() => setAdding(null)} />}
       {paletteOpen && <CommandPalette ctx={cmdCtx} onClose={() => setPaletteOpen(false)} />}
