@@ -13,7 +13,9 @@ import { completeTask } from "./lib/actions";
 import { buildAPI, registry, uiBridge, useRegistry } from "./lib/extensions";
 import type { CommandContext } from "./lib/commands";
 import { savedViews, type SavedView } from "./lib/savedviews";
+import type { SavedFilter } from "./lib/filters";
 import { Sidebar } from "./components/Sidebar";
+import { FilterBuilder } from "./components/FilterBuilder";
 import { TaskList, visibleTasks } from "./components/TaskList";
 import { CompletedList } from "./components/CompletedList";
 import { NewTaskOverlay, type NewTaskInitial } from "./components/NewTaskOverlay";
@@ -46,6 +48,8 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // The filter builder overlay. null = closed; `{}` = new; `{ editing }` = edit.
+  const [filterBuilder, setFilterBuilder] = useState<{ editing?: SavedFilter } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastClicked, setLastClicked] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -133,7 +137,12 @@ export default function App() {
 
   const clearSelection = () => setSelected(new Set());
   // Selection is scoped to a view; leaving it clears the set.
-  useEffect(clearSelection, [view.kind, (view as { label?: string }).label, (view as { source?: string }).source]);
+  useEffect(clearSelection, [
+    view.kind,
+    (view as { label?: string }).label,
+    (view as { source?: string }).source,
+    (view as { id?: string }).id,
+  ]);
 
   // Sticky per-view presentation. `viewKey` uniquely identifies the current
   // view (same string as saved in localStorage). On entering a view, hydrate
@@ -227,6 +236,12 @@ export default function App() {
         if (e.key === "Escape") setSettingsOpen(false);
         return;
       }
+      if (filterBuilder) {
+        // The builder owns the keyboard; its own card handles Escape, but catch
+        // it here too so a blurred overlay still closes.
+        if (e.key === "Escape") setFilterBuilder(null);
+        return;
+      }
       if (helpOpen) {
         if (e.key === "Escape") setHelpOpen(false);
         return;
@@ -317,7 +332,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tasks, selectedId, openId, store, adding, paletteOpen, helpOpen, settingsOpen, view, now, selected, selectedTasks]);
+  }, [tasks, selectedId, openId, store, adding, paletteOpen, helpOpen, settingsOpen, filterBuilder, view, now, selected, selectedTasks]);
 
   const showSort = view.kind !== "completed" && view.kind !== "ext";
   const firstRun = snap.connected && snap.tasks.size === 0;
@@ -330,6 +345,8 @@ export default function App() {
           onNavigate={(v) => (setOpenId(null), navigate(v))}
           onAddTask={openAdd}
           onApplySaved={applySaved}
+          onNewFilter={() => setFilterBuilder({})}
+          onEditFilter={(f) => setFilterBuilder({ editing: f })}
           dark={dark}
           onToggleTheme={toggleTheme}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -506,6 +523,17 @@ export default function App() {
           );
         })()}
 
+      {filterBuilder && (
+        <FilterBuilder
+          initial={filterBuilder.editing}
+          onClose={() => setFilterBuilder(null)}
+          onSaved={(f) => {
+            setFilterBuilder(null);
+            setOpenId(null);
+            navigate({ kind: "filter", id: f.id });
+          }}
+        />
+      )}
       {adding && <NewTaskOverlay now={now} initial={adding} onClose={() => setAdding(null)} />}
       {paletteOpen && <CommandPalette ctx={cmdCtx} onClose={() => setPaletteOpen(false)} />}
       {helpOpen && <ShortcutsHelp onClose={() => setHelpOpen(false)} />}

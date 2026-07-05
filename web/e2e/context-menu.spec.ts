@@ -73,6 +73,15 @@ test.describe("row context menu", () => {
     await expect.poll(() => labelsOf(api, "Ctx label")).toContain("urgent");
   });
 
+  test("Add label submenu: picking an existing label from the list", async ({ page, api }) => {
+    await seed(api, [{ title: "Ctx label existing" }, { title: "Has label", labels: ["reviewed"] }]);
+    await row(page, "Ctx label existing").click({ button: "right" });
+    await menu(page).getByRole("menuitem", { name: "Add label" }).click();
+    await menu(page).getByRole("button", { name: "reviewed", exact: true }).click();
+
+    await expect.poll(() => labelsOf(api, "Ctx label existing")).toContain("reviewed");
+  });
+
   test("Plan today timeboxes the task and shows a planned-time chip", async ({ page, api }) => {
     await seed(api, [{ title: "Ctx plan" }]);
     await row(page, "Ctx plan").click({ button: "right" });
@@ -91,6 +100,8 @@ test.describe("row context menu — synced tasks", () => {
     const active = await api.listActive();
     const gh = active.find((t) => t.source === "github");
     expect(gh, "expected a github-sourced task").toBeTruthy();
+    // Synced items live in their Source view now (built-in lists are local-only).
+    await page.locator('[data-testid="side-item"][data-label="github"]').click();
     const syncedRow = rows(page).filter({ hasText: gh!.title }).first();
     await expect(syncedRow).toBeVisible();
 

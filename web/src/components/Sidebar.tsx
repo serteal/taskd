@@ -7,6 +7,7 @@ import { addLabel, setProject } from "../lib/actions";
 import { notify } from "../lib/notify";
 import { readTaskId } from "../lib/dnd";
 import { savedViews, useSavedViews, type SavedView } from "../lib/savedviews";
+import { savedFilters, useSavedFilters, type SavedFilter } from "../lib/filters";
 import { Icon } from "./icons";
 import { GearIcon } from "./Settings";
 
@@ -18,6 +19,8 @@ export function Sidebar({
   onNavigate,
   onAddTask,
   onApplySaved,
+  onNewFilter,
+  onEditFilter,
   onToggleTheme,
   onOpenSettings,
 }: {
@@ -25,6 +28,8 @@ export function Sidebar({
   onNavigate: (v: View) => void;
   onAddTask: () => void;
   onApplySaved: (v: SavedView) => void;
+  onNewFilter: () => void;
+  onEditFilter: (f: SavedFilter) => void;
   /** Still passed by App; the label now comes from the theme registry. */
   dark: boolean;
   onToggleTheme: () => void;
@@ -34,6 +39,7 @@ export function Sidebar({
   const store = useStore();
   const now = useNow();
   const saved = useSavedViews();
+  const filters = useSavedFilters();
   const { theme } = useThemeSelector();
   useRegistry(); // re-render as extensions register views
   const tasks = [...snap.tasks.values()];
@@ -139,6 +145,56 @@ export function Sidebar({
           </SideSection>
         )}
 
+        {/* Filters are the promotion mechanism: a saved predicate over the
+            whole replica, pinned as a surface. Unlike the built-in lists it
+            can pull synced items in. Always shown so "+ New filter" is
+            discoverable. */}
+        <SideSection title="filters">
+          {filters.map((f) => (
+            <li
+              key={f.id}
+              data-testid="saved-filter"
+              data-filter-name={f.name}
+              className="group/fl flex items-center"
+            >
+              <button
+                onClick={() => onNavigate({ kind: "filter", id: f.id })}
+                className={`flex-1 truncate px-3 py-[5px] text-left text-[13px] ${
+                  sameView(view, { kind: "filter", id: f.id })
+                    ? "bg-accent/10 font-medium text-accent"
+                    : "text-ink hover:bg-ink/[.04] dark:hover:bg-ink/[.07]"
+                }`}
+              >
+                {f.name}
+              </button>
+              <button
+                onClick={() => onEditFilter(f)}
+                aria-label={`Edit filter ${f.name}`}
+                className="invisible px-1 text-mute hover:text-ink group-hover/fl:visible"
+              >
+                <Icon name="pencil" size={12} />
+              </button>
+              <button
+                onClick={() => savedFilters.remove(f.id)}
+                aria-label={`Remove filter ${f.name}`}
+                className="invisible px-2 text-mute hover:text-warn group-hover/fl:visible"
+              >
+                ×
+              </button>
+            </li>
+          ))}
+          <li>
+            <button
+              onClick={onNewFilter}
+              data-testid="new-filter"
+              className="flex w-full items-center gap-1.5 px-3 py-[5px] text-left text-[13px] text-mute hover:bg-ink/[.04] hover:text-ink dark:hover:bg-ink/[.07]"
+            >
+              <Icon name="plus" size={12} strokeWidth={2.5} />
+              New filter
+            </button>
+          </li>
+        </SideSection>
+
         {projects.length > 0 && (
           <SideSection title="projects">
             {projects.map((l) => (
@@ -169,8 +225,11 @@ export function Sidebar({
           </SideSection>
         )}
 
+        {/* Sources are quarantined feeds: synced items (calendar events,
+            issues) live here, not in the built-in lists. A source appears once
+            it has items; clicking it opens that feed. */}
         {sources.length > 0 && (
-          <SideSection title="sources">
+          <SideSection title="sources" caption="synced feeds">
             {sources.map((s) => (
               <SideItem
                 key={s}
@@ -207,11 +266,20 @@ export function Sidebar({
   );
 }
 
-function SideSection({ title, children }: { title: string; children: React.ReactNode }) {
+function SideSection({
+  title,
+  caption,
+  children,
+}: {
+  title: string;
+  caption?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="mt-4" data-testid={`sidebar-section-${title}`}>
-      <div className="px-3 pb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-faint">
-        {title}
+      <div className="flex items-baseline gap-2 px-3 pb-1">
+        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-faint">{title}</span>
+        {caption && <span className="text-[10px] lowercase tracking-normal text-faint/70">{caption}</span>}
       </div>
       <ul>{children}</ul>
     </div>

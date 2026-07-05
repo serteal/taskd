@@ -26,6 +26,9 @@ test.describe("icons (extensions)", () => {
   test.use({ mode: "extensions" });
 
   test("a github row renders its own state icon", async ({ page }) => {
+    // Synced items are local-by-default hidden from the built-in lists; they
+    // live in their Source view. Open it, then inspect a github row.
+    await page.locator('[data-testid="side-item"][data-label="github"]').click();
     // Presenter icon (github octicon) + the core complete check → at least 2 svgs.
     const ghRow = rows(page).filter({ hasText: "#" }).first();
     await expect(ghRow).toBeVisible();

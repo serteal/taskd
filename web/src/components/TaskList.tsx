@@ -73,6 +73,8 @@ const EMPTY_COPY: Record<string, string> = {
   inbox: "Inbox zero — no unfiled tasks.",
   upcoming: "Nothing scheduled.",
   all: "No active tasks.",
+  source: "Nothing synced from this source yet.",
+  filter: "No tasks match this filter.",
 };
 
 export function TaskList({

@@ -158,6 +158,44 @@ Installing an extension is installing software (arbitrary code, both
 halves) — the right trade for personal tooling, and the same one Obsidian or
 a shell's plugins make. Sandboxing would cost more than the whole system.
 
+## 5b. Sources are feeds, not your task list
+
+§5 splits *field* ownership between the source and the user; this splits
+*list membership*. A synced task (`source != ""`) is a mirror of something
+that lives elsewhere — a calendar event, a GitHub issue. Mixing those
+straight into Inbox/Today/All was a category error: a full calendar week
+buried the three things you actually planned to do.
+
+So list membership is **opt-in**, and the default is local:
+
+- **The built-in lists are local-by-default.** Inbox, Today, Upcoming, and
+  All match only `source == ""` — the tasks you authored. This is a pure
+  client-side predicate over the same watched replica; no task changes, and
+  nothing new is stored server-side. (`source` already distinguished local
+  from synced — §9.2 — so the dimension was always there; we just started
+  reading it.)
+- **Sources are quarantined feeds.** Each `source` value is its own sidebar
+  surface, derived live: a source appears once it has items, and its view
+  lists exactly that source. Clicking a source is an explicit request, so it
+  ignores the local-by-default rule — as does clicking a label.
+- **Filters are the promotion mechanism.** A `SavedFilter` is a named
+  predicate over labels / source / text / due, pinned to the sidebar. Its
+  view runs the predicate across the *full* replica, so a filter can pull a
+  chosen synced subset back into a first-class surface — a "Reviews" filter
+  = source `github` + label `review`. Filters are client-only (localStorage),
+  a sibling of saved views: a saved view captures *presentation* (sort,
+  board), a filter defines *membership*.
+- **The calendar becomes a pure consumer.** The rail reads events straight
+  from `ListTasks` (it needs completed past events the active replica omits),
+  not through the view predicate — so quarantining calendar events from Today
+  doesn't touch the rail at all. Events feed the calendar; they no longer
+  double as list rows you must dismiss.
+
+None of this needed a proto or server change. The promotion rules are view
+semantics, and a view has always been "a pure filter over the replica" (§4-ish
+in spirit) — the filter is just user-defined and can widen `source` where the
+built-in lists narrow it.
+
 ## 6. Live updates: refetch, don't replay
 
 `WatchTasks` streams changes from the moment the stream opens. No history,

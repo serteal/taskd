@@ -26,6 +26,9 @@ test.describe("github extension", () => {
       { applyLabels: ["bug"] },
     );
 
+    // Synced github issues are local-by-default hidden from the built-in
+    // lists; they live in their Source view. Open it before asserting rows.
+    await page.locator('[data-testid="side-item"][data-label="github"]').click();
     const r = rows(page).filter({ hasText: "Login button misaligned" });
     await expect(r).toBeVisible();
     await expect(r).toContainText("acme/app#7"); // presenter subtitle
@@ -48,6 +51,8 @@ test.describe("github extension", () => {
       },
     ]);
 
+    // Open the github Source view first (synced rows aren't in the built-in lists).
+    await page.locator('[data-testid="side-item"][data-label="github"]').click();
     await rows(page).filter({ hasText: "Login button misaligned" }).getByText("Login button misaligned").click();
     const detail = page.getByTestId("detail-panel");
     await expect(detail).toContainText("acme/app");

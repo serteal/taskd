@@ -4,13 +4,20 @@ import { rows, row, dialog } from "./helpers";
 test.describe("extensions", () => {
   test.use({ mode: "extensions" });
 
+  // Synced items are local-by-default hidden from the built-in lists; they live
+  // in their Source view. Open the github feed before asserting on its rows.
+  const openGithub = (page: import("@playwright/test").Page) =>
+    page.locator('[data-testid="side-item"][data-label="github"]').click();
+
   test("github issues render with a presenter subtitle", async ({ page }) => {
     await expect(page.getByTestId("sidebar-section-sources")).toContainText("github");
+    await openGithub(page);
     // rowMeta subtitle is "<repo>#<number>".
     await expect(page.getByText(/taskd\/\w+#\d+/).first()).toBeVisible();
   });
 
   test("opening a github issue shows the custom detail section", async ({ page }) => {
+    await openGithub(page);
     await page.getByText(/taskd\/\w+#\d+/).first().click();
     const detail = page.getByTestId("detail-panel");
     await expect(detail).toBeVisible();
@@ -54,6 +61,8 @@ test.describe("extension error isolation", () => {
 
   test("a throwing detail section is caught by the boundary", async ({ page, api, consoleErrors }) => {
     await api.upsertExternal("test", [{ externalRef: "t1", title: "Broken detail item" }]);
+    // Synced "test" items live in the Source view, not the built-in lists.
+    await page.locator('[data-testid="side-item"][data-label="test"]').click();
     // Presenter rows put the title + subtitle in one span, so match by
     // substring rather than the exact-title `row()` helper.
     const r = rows(page).filter({ hasText: "Broken detail item" });

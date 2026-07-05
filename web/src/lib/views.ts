@@ -1,5 +1,6 @@
 import type { Task } from "../gen/task/task_pb";
 import { dayDiff, tsDate } from "./format";
+import { matchesFilter, savedFilters } from "./filters";
 
 // A view is a pure filter over the replica (Completed is the exception: it
 // pages the server, since the archive isn't replicated). Views live in the
@@ -7,6 +8,11 @@ import { dayDiff, tsDate } from "./format";
 //
 // "Inbox" follows the label model, not a schema: it is the active tasks
 // that belong to no project — i.e. carry no "project:" label.
+//
+// The built-in lists (inbox/today/upcoming/all) are LOCAL-by-default: they
+// show only tasks you created (`source === ""`). Synced items live in their
+// Source view (an explicit request) and can be promoted onto a named surface
+// by a `filter` view. This is the sources≠tasks model — see DESIGN §5b.
 
 export type View =
   | { kind: "inbox" }
@@ -16,12 +22,15 @@ export type View =
   | { kind: "completed" }
   | { kind: "label"; label: string }
   | { kind: "source"; source: string }
+  | { kind: "filter"; id: string }
   | { kind: "ext"; id: string };
 
 export function parseView(search: string): View {
   const p = new URLSearchParams(search);
   const ext = p.get("ext");
   if (ext) return { kind: "ext", id: ext };
+  const filter = p.get("filter");
+  if (filter) return { kind: "filter", id: filter };
   const label = p.get("label");
   if (label) return { kind: "label", label };
   const source = p.get("source");
@@ -51,6 +60,9 @@ export function viewToSearch(v: View): string {
     case "source":
       p.set("source", v.source);
       break;
+    case "filter":
+      p.set("filter", v.id);
+      break;
     case "ext":
       p.set("ext", v.id);
       break;
@@ -76,6 +88,8 @@ export function viewTitle(v: View): string {
       return v.label;
     case "source":
       return v.source;
+    case "filter":
+      return savedFilters.get(v.id)?.name ?? "Filter";
     case "ext":
       return v.id;
   }
@@ -83,20 +97,32 @@ export function viewTitle(v: View): string {
 
 export function matchesView(t: Task, v: View, now: Date): boolean {
   switch (v.kind) {
+    // The built-in lists are local-by-default: synced items (source != "")
+    // are quarantined to their Source view and pulled in only by an explicit
+    // filter. This is the sources≠tasks model.
     case "all":
-      return true;
+      return t.source === "";
     case "inbox":
-      return !t.labels.some((l) => l.startsWith("project:"));
+      return t.source === "" && !t.labels.some((l) => l.startsWith("project:"));
     case "today": {
+      if (t.source !== "") return false;
       const due = tsDate(t.dueTime);
       return due !== undefined && dayDiff(due, now) <= 0;
     }
     case "upcoming":
-      return t.dueTime !== undefined;
+      return t.source === "" && t.dueTime !== undefined;
+    // Clicking a label or a source is an explicit request: show all matches
+    // regardless of source.
     case "label":
       return t.labels.includes(v.label);
     case "source":
       return t.source === v.source;
+    case "filter": {
+      // Resolve the SavedFilter and run its predicate over the full replica —
+      // this is what lets a filter promote a chosen subset of synced items.
+      const f = savedFilters.get(v.id);
+      return f ? matchesFilter(f.predicate, t, now) : false;
+    }
     case "completed":
       return false; // served by the server, not the replica
     case "ext":

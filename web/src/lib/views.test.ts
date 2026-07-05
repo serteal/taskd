@@ -11,6 +11,7 @@ import {
   DEFAULT_VIEW_PREFS,
   type View,
 } from "./views";
+import { savedFilters } from "./filters";
 
 const NOW = new Date(2026, 6, 6, 12, 0, 0); // Mon 2026-07-06
 
@@ -23,32 +24,58 @@ const task = (p: Partial<{ labels: string[]; due: Date; source: string }>): Task
   }) as unknown as Task;
 
 describe("matchesView", () => {
-  it("all matches everything", () => {
+  it("all matches local tasks but excludes synced items", () => {
     expect(matchesView(task({}), { kind: "all" }, NOW)).toBe(true);
+    expect(matchesView(task({ source: "github" }), { kind: "all" }, NOW)).toBe(false);
+    expect(matchesView(task({ source: "gcal:personal" }), { kind: "all" }, NOW)).toBe(false);
   });
 
-  it("inbox excludes tasks with a project label", () => {
+  it("inbox excludes project labels and synced items", () => {
     expect(matchesView(task({}), { kind: "inbox" }, NOW)).toBe(true);
     expect(matchesView(task({ labels: ["project:home"] }), { kind: "inbox" }, NOW)).toBe(false);
     expect(matchesView(task({ labels: ["p1"] }), { kind: "inbox" }, NOW)).toBe(true);
+    // A synced task with no project label still does NOT land in Inbox.
+    expect(matchesView(task({ source: "github" }), { kind: "inbox" }, NOW)).toBe(false);
   });
 
-  it("today is due on or before today", () => {
+  it("today is a local task due on or before today", () => {
     expect(matchesView(task({ due: new Date(2026, 6, 6, 20) }), { kind: "today" }, NOW)).toBe(true);
     expect(matchesView(task({ due: new Date(2026, 6, 5) }), { kind: "today" }, NOW)).toBe(true);
     expect(matchesView(task({ due: new Date(2026, 6, 7) }), { kind: "today" }, NOW)).toBe(false);
     expect(matchesView(task({}), { kind: "today" }, NOW)).toBe(false);
+    // Synced items never leak into Today, even when due today.
+    expect(
+      matchesView(task({ due: new Date(2026, 6, 6), source: "gcal:personal" }), { kind: "today" }, NOW),
+    ).toBe(false);
   });
 
-  it("upcoming is any dated task", () => {
+  it("upcoming is any dated local task", () => {
     expect(matchesView(task({ due: new Date(2026, 6, 9) }), { kind: "upcoming" }, NOW)).toBe(true);
     expect(matchesView(task({}), { kind: "upcoming" }, NOW)).toBe(false);
+    expect(
+      matchesView(task({ due: new Date(2026, 6, 9), source: "github" }), { kind: "upcoming" }, NOW),
+    ).toBe(false);
   });
 
-  it("label and source filter by exact value", () => {
+  it("label and source filter by exact value, regardless of source", () => {
     expect(matchesView(task({ labels: ["waiting"] }), { kind: "label", label: "waiting" }, NOW)).toBe(true);
     expect(matchesView(task({ labels: ["x"] }), { kind: "label", label: "waiting" }, NOW)).toBe(false);
+    // A synced task IS shown in its source view and in a label view it carries.
     expect(matchesView(task({ source: "github" }), { kind: "source", source: "github" }, NOW)).toBe(true);
+    expect(
+      matchesView(task({ source: "github", labels: ["bug"] }), { kind: "label", label: "bug" }, NOW),
+    ).toBe(true);
+  });
+
+  it("a filter view resolves its SavedFilter and can promote synced items", () => {
+    const f = savedFilters.add({ name: "Reviews", predicate: { source: "github", labelsAny: ["review"] } });
+    const gh = task({ source: "github", labels: ["review"] });
+    expect(matchesView(gh, { kind: "filter", id: f.id }, NOW)).toBe(true);
+    // A local task without the label is excluded.
+    expect(matchesView(task({}), { kind: "filter", id: f.id }, NOW)).toBe(false);
+    // An unknown filter id matches nothing.
+    expect(matchesView(gh, { kind: "filter", id: "missing" }, NOW)).toBe(false);
+    savedFilters.remove(f.id);
   });
 
   it("completed and ext are never replica matches", () => {
@@ -66,6 +93,7 @@ describe("parseView / viewToSearch round trip", () => {
     { kind: "completed" },
     { kind: "label", label: "project:home" },
     { kind: "source", source: "github" },
+    { kind: "filter", id: "abc123" },
     { kind: "ext", id: "gcal" },
   ];
 
