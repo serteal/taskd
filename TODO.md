@@ -57,64 +57,59 @@ decisions). The only server-side additions the model needs are: a way to
 
 ---
 
+## Status — 2026-07-05: M1–M3 shipped
+
+M1–M3 landed in 8 commits (`ea32a77`→`5fc114e`). Verified: full web e2e
+**106 passing** (zero-console-error invariant held), Go suite green, and a
+live embedded-binary smoke (health, app HTML, PWA manifest/icon, admin +
+task RPCs). **Remaining in these milestones:** M1 launch-DX auto-open +
+release/CI, and M2 per-source configuration (needs extension config schema —
+pairs with M5). Everything else below is done.
+
+---
+
 ## M1 — Daily driver on localhost
 
 *Make it the thing you actually open every day: installable, and free of the
 rough edges. Mostly web-only; no proto changes.*
 
 ### Install & deploy
-- [ ] **PWA / installable app.** Add `manifest.webmanifest` (name, icons,
-      `display: standalone`, `theme_color`, `start_url`) + app icons to the
-      Vite build so they land in `dist/` and get embedded/served; add
-      `<link rel="manifest">` and `theme-color` to `web/index.html`. localhost
-      is a secure context, so Chrome "Install app" works with just this.
-- [ ] **First-run & launch DX.** `taskd` prints the URL and optionally opens
-      the browser; a clean empty state that explains "install me as an app"
-      and "connect a source." (First-run empty state exists; extend it.)
-- [ ] **Release story.** Prebuilt `taskd`/`task`/`task-mcp` binaries (web UI
-      embedded) + a one-line install; document the "run daemon, install web
-      app" flow in the README.
+- [x] **PWA / installable app.** `manifest.webmanifest` + SVG app icon in the
+      Vite build, `<link rel="manifest">` + theme-color in `index.html`, and a
+      `.webmanifest` MIME registration in the daemon. Chrome "Install app" works
+      on localhost. (`86a0c7e`)
+- [ ] **First-run & launch DX.** *(remaining)* First-run empty state exists;
+      still to do: `taskd` optionally auto-opens the browser + richer
+      "install-as-app / connect a source" onboarding.
+- [ ] **Release story.** *(remaining)* Prebuilt binaries + one-line install +
+      CI — packaging infra, not yet built.
 
 ### UI polish (the list you flagged)
-- [ ] **Remove the header search bar.** Delete the in-header `Search…` input,
-      its `search` state, and the client-side title/notes filter; `⌘K`
-      already searches tasks. Follow-ups: drop `search` from `SavedView`, and
-      update `a11y.spec.ts` / `search.spec.ts` which assert the old input.
-- [ ] **Calm hover state.** Stop mutating a row's appearance on hover. Keep
-      the label chips visible; show only a **drag-handle (dots) + grab
-      cursor**. Remove the trash/bin-on-hover entirely.
-- [ ] **Row actions via context menu.** Move delete/schedule/priority/label
-      off hover into a **right-click context menu** (Todoist/Linear style),
-      plus the detail panel and multi-select bulk bar. Deleting a task should
-      never be a stray hover target.
-- [ ] **Nicer view controls.** Replace the raw mono `sort`/`group` `<select>`
-      and the `list`/`board` text toggle with a single tidy **"View" menu**
-      (segmented list/board toggle with icons; sort + group-by inside a
-      popover). Match the app's typographic weight instead of debug-mono.
-- [ ] **Multi-line quick add.** The quick-add title should **auto-grow** to
-      multiple lines for long titles instead of staying a 1-row textarea; keep
-      Enter = submit, Shift+Enter = newline. (Stretch: pasting N lines offers
-      "create N tasks.")
-- [ ] **Todoist-style overdue.** A distinct **Overdue** treatment at the top
-      of Today with one-click **Reschedule** (Today / Tomorrow / this weekend /
-      pick), a per-task inline reschedule, and a **"reschedule all overdue →
-      today"** action. (Today: only a red "Overdue" group header + generic
-      schedule popover.)
-- [ ] **Sticky view state.** Persist sort/board/group-by (per view) so a
-      reload doesn't reset them — today they're session-local React state.
+- [x] **Remove the header search bar.** Gone; `⌘K` is the search path; `search`
+      dropped from `SavedView` (legacy entries still load). (`1c2aed1`)
+- [x] **Calm hover state.** Rows no longer mutate on hover — chips stay, only the
+      drag handle + grab cursor appear. No bin. (`d58bef6`)
+- [x] **Row actions via context menu.** Right-click menu (schedule / priority /
+      label / complete / delete / plan-today), reusing the shared pickers;
+      synced tasks get the subset minus Rename. (`d58bef6`)
+- [x] **Nicer view controls.** A single "View" popover (segmented List/Board,
+      Sort by, Group by) replaces the debug-mono selects. (`1c2aed1`)
+- [x] **Multi-line quick add.** Title + description textareas auto-grow;
+      Enter submits, Shift+Enter newline. (`1c2aed1`)
+- [x] **Todoist-style overdue.** The Overdue group header has a batch Reschedule
+      (Today / Tomorrow / weekend / pick); per-task via the context menu + date
+      cell. (`d58bef6`)
+- [x] **Sticky view state.** Sort/board/group-by persist per view across
+      reloads. (`1c2aed1`)
 
 ### Settings surface
-- [ ] **Settings shell.** A real Settings screen (Todoist-like): sections for
-      General, Appearance, Extensions, Keyboard, About. Greenfield — no
-      settings UI exists today.
-- [ ] **Theme catalog.** Promote theming from a light/dark boolean to a
-      **named-theme picker**: ship several curated light+dark themes —
-      Catppuccin (Latte/Frappé/Macchiato/Mocha), Gruvbox (light/dark), Nord,
-      Rosé Pine, Solarized, plus the existing paper/dusk. A theme is just a set
-      of CSS-var values (`--bg/--surface/--ink/--muted/--faint/--line/--accent/
-      --warn`); add a registry + preview + persistence. Respect
-      `prefers-color-scheme` for the default.
-- [ ] **Enable/disable extensions** (needs the daemon — see M2).
+- [x] **Settings shell.** Focus-trapped Settings overlay (Appearance /
+      Extensions / About), opened from the sidebar gear + ⌘K. (`931f7bd`)
+- [x] **Theme catalog.** 13 themes (paper/dusk, Catppuccin, Gruvbox, Nord, Rosé
+      Pine, Solarized) with a live-swatch picker; applied via CSS vars + `.dark`
+      + `data-theme`, persisted, `prefers-color-scheme` default. (`86a0c7e`)
+- [x] **Enable/disable extensions.** `admin.AdminService` (hot toggle,
+      config-persisted) + the Settings → Extensions toggles. (`e3bb44a` + `931f7bd`)
 
 ---
 
@@ -123,35 +118,28 @@ rough edges. Mostly web-only; no proto changes.*
 *The source/task separation above. Web-side view model + a small daemon lever
 for disabling sources.*
 
-- [ ] **Redefine built-in views to "local by default."** `Inbox`, `All`,
-      `Today`, `Upcoming` filter to `source == ""`. Synced items stop leaking
-      in. (Client-side predicate change over the replica; no proto change.)
-- [ ] **Sidebar "Sources" area.** One entry per connected source (gcal:*,
-      github, …), showing that source's items in its own view. Distinguish a
-      *connected source* from an incidental `source` string — connected =
-      installed+enabled extension, not merely "≥1 task exists."
-- [ ] **Filters → sections.** A user-buildable filter (labels, source, due,
-      text — the `TaskFilter` dimensions, as UI, no query language) that can be
-      **pinned as a sidebar section**. This is the promotion mechanism: pull a
-      slice of a source into a named surface. Generalizes today's localStorage
-      "saved views" into first-class filters. Decide OR-across-sources support
-      (see Open decisions).
-- [ ] **Enable/disable a source (daemon).** A settings-writable list of
-      disabled extensions the daemon reads to decide whether to supervise the
-      syncer **and** serve its bundle; ideally hot (no restart). This is the
-      one piece that can't be client-only — a running syncer keeps upserting
-      regardless of any browser flag.
-- [ ] **Per-source configuration.** Let a source scope what it ingests (the
-      doc-comments "only files under `src/`" case). Mechanism: the extension
-      declares a config schema → Settings renders a form → writes the
-      extension's own `config.yaml` → the syncer reads it. (Overlaps the M5
-      extension-settings item; do it once.)
-- [ ] **Calendar as a pure consumer.** With calendar sources excluded from
-      lists, the calendar rail becomes the *only* place their events surface —
-      confirm nothing else renders `gcal:*` as rows, and that timeboxing still
-      targets your local tasks against those events.
-- [ ] **Update DESIGN.md.** Document the source/task/filter model as an
-      evolution of §5/§5a (sources are feeds; list membership is opt-in).
+- [x] **Redefine built-in views to "local by default."** inbox/today/upcoming/
+      all filter to `source == ""`; synced items stop leaking in. (`5fc114e`)
+- [x] **Sidebar "Sources" area.** Synced feeds grouped under a "Sources"
+      heading ("synced feeds"), each a per-source view. (`5fc114e`) *(Derived
+      from live source strings; a connected-but-empty source registry is a later
+      refinement.)*
+- [x] **Filters → sections.** `SavedFilter` (labels/source/due/text predicate)
+      pinned as a sidebar section via a FilterBuilder overlay; the predicate
+      runs over the full replica so it can promote synced items onto a named
+      surface. (`5fc114e`)
+- [x] **Enable/disable a source (daemon).** Hot toggle via the admin API — stops
+      the syncer + unserves the bundle, config-persisted. (`e3bb44a`)
+- [ ] **Per-source configuration.** *(remaining)* Let a source scope what it
+      ingests (the doc-comments "only files under `src/`" case). Needs the
+      extension to declare a config schema + the admin API to read/write the
+      extension's own `config.yaml`. Pairs with the M5 extension-settings work;
+      deferred.
+- [x] **Calendar as a pure consumer.** With calendar sources excluded from the
+      lists (local-by-default), gcal events surface only in the calendar rail;
+      timeboxing still targets your local tasks against them. (`5fc114e`)
+- [x] **Update DESIGN.md.** New §5b documents the source/task/filter model as an
+      evolution of §5/§5a (sources are feeds; list membership is opt-in). (`5fc114e`)
 
 ---
 
@@ -161,27 +149,21 @@ for disabling sources.*
 only. Make timeboxing a first-class planning surface. Extension-side (gcal
 web bundle) + a bit of core (timebox visibility).*
 
-- [ ] **Move a placed timebox.** Drag an existing timebox block to a new time
-      (rewrites `user_data.timebox`). Today you can only create (drop) or clear.
-- [ ] **Resize duration.** Edge-drag a timebox to change its end; today
-      duration is hard-coded to 60 min with a 30-min drop snap.
-- [ ] **Zoom in/out.** Make px-per-minute adjustable (buttons and/or
-      ctrl-scroll); today it's a compile-time constant with a fixed 07:00–21:00
-      band.
-- [ ] **Better overlap handling.** Move from greedy equal-width lanes to
-      Google-Calendar-style packing (min widths, hover-to-front, clearer
-      separation of events vs timeboxes).
-- [ ] **Multi-day / week view + navigation.** Bring back a week/multi-day grid
-      (the code was extracted from one) with cross-week nav, so you can plan
-      more than today.
-- [ ] **Keyboard reachability.** A non-drag path to timebox/reschedule
-      (drag-only actions have no keyboard equivalent today) — pick a slot from
-      a menu, nudge with arrows.
-- [ ] **Timeboxes visible outside the rail.** A timebox is invisible unless
-      the gcal panel is open. Show a "planned HH:MM" indicator on the task row
-      and/or a "Planned today" surface, so timeboxing isn't gcal-only.
-- [ ] **Timebox any local task, from anywhere.** "Add to calendar" from the
-      row/detail/context-menu, not only by dragging onto the rail.
+- [x] **Move a placed timebox.** Drag an existing block to a new time
+      (preserves duration). (`089beab`)
+- [x] **Resize duration.** Bottom-edge drag; min 15 min. (`089beab`)
+- [x] **Zoom in/out.** −/+ buttons and ⌘/ctrl-wheel; persisted; all geometry
+      scales with px-per-minute. (`089beab`)
+- [x] **Better overlap handling.** Calendar-style packing (blocks widen into
+      free columns, hover-to-front) replacing equal-width lanes. (`089beab`)
+- [x] **Multi-day / week view + navigation.** Day / 3-day / Week toggle with
+      span-stepped nav; sticky gutter + per-day headers. (`089beab`)
+- [x] **Keyboard reachability.** Focus a block; ↑/↓ nudge start, shift+↑/↓
+      duration, delete clears, enter opens. (`089beab`)
+- [x] **Timeboxes visible outside the rail.** A '◷ HH:MM' chip on rows with a
+      timebox (core `timebox.ts` helper, not the gcal extension). (`d58bef6`)
+- [x] **Timebox any local task, from anywhere.** "Plan today" context action
+      timeboxes without dragging. (`d58bef6`)
 
 ---
 
