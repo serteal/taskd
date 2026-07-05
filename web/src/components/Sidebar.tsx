@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNow, useSnapshot, useStore } from "../lib/hooks";
+import { useNow, useSnapshot, useStore, useThemeSelector } from "../lib/hooks";
 import { matchesView, sameView, viewTitle, type View } from "../lib/views";
 import { chipParts } from "../lib/format";
 import { registry, useRegistry } from "../lib/extensions";
@@ -17,13 +17,13 @@ export function Sidebar({
   onNavigate,
   onAddTask,
   onApplySaved,
-  dark,
   onToggleTheme,
 }: {
   view: View;
   onNavigate: (v: View) => void;
   onAddTask: () => void;
   onApplySaved: (v: SavedView) => void;
+  /** Still passed by App; the label now comes from the theme registry. */
   dark: boolean;
   onToggleTheme: () => void;
 }) {
@@ -31,6 +31,7 @@ export function Sidebar({
   const store = useStore();
   const now = useNow();
   const saved = useSavedViews();
+  const { theme } = useThemeSelector();
   useRegistry(); // re-render as extensions register views
   const tasks = [...snap.tasks.values()];
 
@@ -183,9 +184,11 @@ export function Sidebar({
 
       <button
         onClick={onToggleTheme}
+        title="Toggle light/dark (full theme picker lives in Settings)"
+        data-theme-id={theme.id}
         className="border-t border-line px-3 py-2 text-left font-mono text-[11px] text-mute hover:text-ink"
       >
-        theme: {dark ? "dusk" : "paper"}
+        theme: {theme.id}
       </button>
     </aside>
   );

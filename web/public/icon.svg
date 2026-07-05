@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="taskd">
+  <!-- Full-bleed paper background so the icon stays mask-safe (the OS rounds
+       the corners); the glyph sits well inside the central safe zone. -->
+  <rect width="512" height="512" fill="#f4f4f1" />
+  <!-- Faint engineering-paper grid — the app's identity. -->
+  <g stroke="#e3e3dc" stroke-width="2" fill="none">
+    <path d="M128 64V448 M192 64V448 M256 64V448 M320 64V448 M384 64V448" />
+    <path d="M64 128H448 M64 192H448 M64 256H448 M64 320H448 M64 384H448" />
+  </g>
+  <!-- Mono "t_" wordmark mark in the petrol accent. -->
+  <g fill="#0b7a6b">
+    <rect x="201" y="150" width="36" height="210" rx="8" />
+    <rect x="163" y="200" width="112" height="34" rx="8" />
+    <rect x="271" y="332" width="82" height="26" rx="6" />
+  </g>
+</svg>

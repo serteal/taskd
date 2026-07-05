@@ -8,6 +8,12 @@ import { newTaskClient } from "./lib/client";
 import { TaskStore } from "./lib/store";
 import { StoreContext } from "./lib/hooks";
 import { loadExtensions } from "./lib/extensions";
+import { applyTheme, resolveInitialThemeId } from "./lib/themes";
+
+// Apply the saved (or system-preferred) theme to <html> before React mounts so
+// there's no flash of the wrong palette. index.css holds paper/dusk as the
+// first-paint fallback; this overrides with inline vars + `.dark` + data-theme.
+applyTheme(resolveInitialThemeId());
 
 // Extensions bundle with `react` aliased to a shim that reads these — one
 // React instance across host and extensions, or hooks break.

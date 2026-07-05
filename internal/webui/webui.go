@@ -8,12 +8,19 @@ package webui
 import (
 	"embed"
 	"io/fs"
+	"mime"
 	"net/http"
 	"strings"
 )
 
 //go:embed all:dist
 var dist embed.FS
+
+func init() {
+	// Go's static file server derives Content-Type from the file extension;
+	// .webmanifest isn't in its builtin table, so register it explicitly.
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+}
 
 // Handler serves the bundle with an SPA fallback: unknown paths get
 // index.html so client-side view URLs survive a reload.
