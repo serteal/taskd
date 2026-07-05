@@ -16,8 +16,8 @@ See [DESIGN.md](DESIGN.md) for the rationale and
 ```sh
 git clone https://github.com/serteal/taskd && cd taskd
 make build-web   # builds ./taskd (web UI embedded), ./task, ./task-mcp
-./taskd &        # serves http://127.0.0.1:7517, data in ~/.taskd
-open http://127.0.0.1:7517   # the web app — same port as the API
+./taskd &        # serves http://127.0.0.1:8888, data in ~/.taskd
+open http://127.0.0.1:8888   # the web app — same port as the API
 ./task add "write the calendar connector" -l dev -l project:taskd --due tomorrow
 ./task ls
 ./task done <id-prefix>

@@ -37,7 +37,7 @@ touches the store; extensions and all binaries speak only the public API.
 
 ## Runtime
 
-`taskd` listens on `127.0.0.1:7517` (config `listen:`) and optionally a
+`taskd` listens on `127.0.0.1:8888` (config `listen:`) and optionally a
 0600 unix socket (config `socket:`). One h2c port serves the Connect,
 gRPC, and gRPC-Web protocols simultaneously, plus `GET /healthz` and the
 extension routes under `/ext/`. Data lives in `$TASKD_DIR` (default
@@ -45,7 +45,7 @@ extension routes under `/ext/`. Data lives in `$TASKD_DIR` (default
 
 ```yaml
 # ~/.taskd/config.yaml — everything optional
-listen: 127.0.0.1:7517
+listen: 127.0.0.1:8888
 socket: /Users/me/.taskd/taskd.sock
 ```
 
@@ -54,7 +54,7 @@ Integrations are NOT configured here — they are extensions (folders under
 
 Clients resolve the daemon address from `TASKD_ADDR`
 (`http://host:port` or `unix:///path`), defaulting to
-`http://127.0.0.1:7517`.
+`http://127.0.0.1:8888`.
 
 ## The API
 
@@ -107,7 +107,7 @@ via `internal/webui`, so one process serves UI and API from one port.
 **curl** — Connect's JSON encoding works everywhere:
 
 ```sh
-curl -s http://127.0.0.1:7517/task.TaskService/ListTasks \
+curl -s http://127.0.0.1:8888/task.TaskService/ListTasks \
   -H 'content-type: application/json' \
   -d '{"filter": {"labelsAll": ["p1"], "completed": false}}'
 ```

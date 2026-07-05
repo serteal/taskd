@@ -20,13 +20,13 @@ export default defineConfig({
     // Allow vitest to load the extension unit tests that live outside web/.
     fs: { allow: [repoRoot] },
     proxy: {
-      "/task.TaskService": "http://127.0.0.1:7517",
-      "/healthz": "http://127.0.0.1:7517",
-      "/ext": "http://127.0.0.1:7517",
+      "/task.TaskService": "http://127.0.0.1:8888",
+      "/healthz": "http://127.0.0.1:8888",
+      "/ext": "http://127.0.0.1:8888",
     },
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.{ts,tsx}", extTests],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx", extTests],
   },
 });

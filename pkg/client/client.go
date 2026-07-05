@@ -15,7 +15,7 @@ import (
 
 // DefaultTarget is where clients look for the daemon when TASKD_ADDR is
 // unset; it matches the daemon's default listen address.
-const DefaultTarget = "http://127.0.0.1:7517"
+const DefaultTarget = "http://127.0.0.1:8888"
 
 // Target resolves the daemon address: TASKD_ADDR env var, else the default.
 // Accepted forms: "http://host:port" or "unix:///path/to/taskd.sock".

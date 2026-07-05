@@ -14,7 +14,7 @@ import (
 
 func main() {
 	dir := flag.String("dir", "", "data directory (default $TASKD_DIR or ~/.taskd)")
-	listen := flag.String("listen", "", "TCP listen address (default from config.yaml or 127.0.0.1:7517)")
+	listen := flag.String("listen", "", "TCP listen address (default from config.yaml or 127.0.0.1:8888)")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
