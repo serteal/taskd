@@ -7,6 +7,7 @@ import { chipParts, endOfDay } from "./format";
 import { SORT_LABELS } from "./views";
 import { completeTask, deleteTaskWithUndo, rescheduleTask } from "./actions";
 import { Icon } from "../components/icons";
+import { GearIcon } from "../components/Settings";
 
 // Builds the ⌘K palette's command list from the current app state. The palette
 // filters/ranks these by the query; task search is added separately from the
@@ -32,6 +33,7 @@ export interface CommandContext {
   togglePanel: (id: string) => void;
   openTask: (id: string) => void;
   openAdd: () => void;
+  openSettings?: () => void;
   saveCurrentView: () => void;
   extCommands: Command[];
   now: Date;
@@ -46,6 +48,8 @@ export function buildStaticCommands(ctx: CommandContext): PaletteCommand[] {
   out.push({ id: "new-task", title: "New task", group: "Actions", icon: <Icon name="plus" />, keywords: "add create", run: ctx.openAdd });
   out.push({ id: "save-view", title: "Save current view…", group: "Actions", icon: <Icon name="star" />, keywords: "pin bookmark filter", run: ctx.saveCurrentView });
   out.push({ id: "theme", title: "Toggle theme", group: "Actions", icon: <Icon name="moon" />, keywords: "dark light", run: ctx.toggleTheme });
+  if (ctx.openSettings)
+    out.push({ id: "settings", title: "Open settings", group: "Actions", icon: <GearIcon />, keywords: "preferences appearance theme extensions", run: ctx.openSettings });
   for (const p of ctx.panels) {
     out.push({
       id: `panel-${p.id}`,

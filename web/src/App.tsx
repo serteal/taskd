@@ -23,6 +23,7 @@ import { ToastStack } from "./components/ToastStack";
 import { CommandPalette } from "./components/CommandPalette";
 import { ExtensionBoundary } from "./components/ExtensionBoundary";
 import { ShortcutsHelp } from "./components/ShortcutsHelp";
+import { Settings } from "./components/Settings";
 import { BulkBar } from "./components/BulkBar";
 import { ContextMenu, TaskContextMenu } from "./components/ContextMenu";
 import { ViewMenu } from "./components/ViewMenu";
@@ -44,6 +45,7 @@ export default function App() {
   const [adding, setAdding] = useState<NewTaskInitial | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastClicked, setLastClicked] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -201,6 +203,7 @@ export default function App() {
       togglePanel,
       openTask: openTaskById,
       openAdd,
+      openSettings: () => setSettingsOpen(true),
       saveCurrentView,
       extCommands: registry.commands,
       now,
@@ -220,6 +223,10 @@ export default function App() {
       }
       // Modal overlays own the keyboard while open; Escape always closes them
       // (even if focus has left their card).
+      if (settingsOpen) {
+        if (e.key === "Escape") setSettingsOpen(false);
+        return;
+      }
       if (helpOpen) {
         if (e.key === "Escape") setHelpOpen(false);
         return;
@@ -310,7 +317,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tasks, selectedId, openId, store, adding, paletteOpen, helpOpen, view, now, selected, selectedTasks]);
+  }, [tasks, selectedId, openId, store, adding, paletteOpen, helpOpen, settingsOpen, view, now, selected, selectedTasks]);
 
   const showSort = view.kind !== "completed" && view.kind !== "ext";
   const firstRun = snap.connected && snap.tasks.size === 0;
@@ -325,6 +332,7 @@ export default function App() {
           onApplySaved={applySaved}
           dark={dark}
           onToggleTheme={toggleTheme}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
@@ -501,6 +509,15 @@ export default function App() {
       {adding && <NewTaskOverlay now={now} initial={adding} onClose={() => setAdding(null)} />}
       {paletteOpen && <CommandPalette ctx={cmdCtx} onClose={() => setPaletteOpen(false)} />}
       {helpOpen && <ShortcutsHelp onClose={() => setHelpOpen(false)} />}
+      {settingsOpen && (
+        <Settings
+          onClose={() => setSettingsOpen(false)}
+          onOpenShortcuts={() => {
+            setSettingsOpen(false);
+            setHelpOpen(true);
+          }}
+        />
+      )}
       <ToastStack />
     </div>
   );

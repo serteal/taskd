@@ -8,6 +8,7 @@ import { notify } from "../lib/notify";
 import { readTaskId } from "../lib/dnd";
 import { savedViews, useSavedViews, type SavedView } from "../lib/savedviews";
 import { Icon } from "./icons";
+import { GearIcon } from "./Settings";
 
 // Everything below the fixed views is computed from the live replica —
 // projects are the "project:" labels in use, sources are whatever syncers
@@ -18,6 +19,7 @@ export function Sidebar({
   onAddTask,
   onApplySaved,
   onToggleTheme,
+  onOpenSettings,
 }: {
   view: View;
   onNavigate: (v: View) => void;
@@ -26,6 +28,7 @@ export function Sidebar({
   /** Still passed by App; the label now comes from the theme registry. */
   dark: boolean;
   onToggleTheme: () => void;
+  onOpenSettings: () => void;
 }) {
   const snap = useSnapshot();
   const store = useStore();
@@ -182,14 +185,24 @@ export function Sidebar({
         )}
       </nav>
 
-      <button
-        onClick={onToggleTheme}
-        title="Toggle light/dark (full theme picker lives in Settings)"
-        data-theme-id={theme.id}
-        className="border-t border-line px-3 py-2 text-left font-mono text-[11px] text-mute hover:text-ink"
-      >
-        theme: {theme.id}
-      </button>
+      <div className="border-t border-line">
+        <button
+          onClick={onOpenSettings}
+          data-testid="open-settings"
+          className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-mute hover:bg-ink/[.04] hover:text-ink dark:hover:bg-ink/[.07]"
+        >
+          <GearIcon size={15} />
+          Settings
+        </button>
+        <button
+          onClick={onToggleTheme}
+          title="Toggle light/dark (full theme picker lives in Settings)"
+          data-theme-id={theme.id}
+          className="w-full border-t border-line px-3 py-2 text-left font-mono text-[11px] text-mute hover:text-ink"
+        >
+          theme: {theme.id}
+        </button>
+      </div>
     </aside>
   );
 }
