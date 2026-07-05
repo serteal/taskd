@@ -9,7 +9,7 @@ test.describe("calendar timebox", () => {
     await seed(api, [{ title: "Plan the day" }]);
     await expect(row(page, "Plan the day")).toBeVisible();
     await expect(page.getByTestId("calendar-rail")).toBeVisible();
-    await expect(page.locator("header select")).toHaveValue("smart");
+    await expect(page.locator("header")).toHaveAttribute("data-view-sort", "smart");
 
     await dragTo(page, "Plan the day", '[data-testid="cal-daycolumn"]', { clientY: 400 });
 
@@ -20,7 +20,7 @@ test.describe("calendar timebox", () => {
       .poll(async () => (await api.listAll()).find((t) => t.title === "Plan the day")?.userData)
       .toHaveProperty("timebox");
     // …and, crucially, the list sort stays smart (calendar drops are not reorders).
-    await expect(page.locator("header select")).toHaveValue("smart");
+    await expect(page.locator("header")).toHaveAttribute("data-view-sort", "smart");
   });
 
   test("clearing a timebox removes the block", async ({ page, api }) => {

@@ -1,7 +1,9 @@
 import { test, expect } from "./fixtures";
-import { row, rows, seed } from "./helpers";
+import { rows, seed, openPalette, dialog } from "./helpers";
 
-test.describe("search", () => {
+// The standalone header search bar was removed; ⌘K is the search path now. It
+// searches all tasks (title, notes, labels) and opens the chosen match.
+test.describe("search (⌘K palette)", () => {
   test.beforeEach(async ({ api, page }) => {
     await seed(api, [
       { title: "Buy milk" },
@@ -11,31 +13,30 @@ test.describe("search", () => {
     await expect(rows(page)).toHaveCount(3);
   });
 
-  test("narrows the list by title", async ({ page }) => {
-    await page.getByRole("textbox", { name: "Search this view" }).fill("buy");
-    await expect(rows(page)).toHaveCount(2);
-    await expect(row(page, "Buy milk")).toBeVisible();
-    await expect(row(page, "Buy eggs")).toBeVisible();
-    await expect(row(page, "Write report")).toHaveCount(0);
+  test("finds tasks by title", async ({ page }) => {
+    await openPalette(page);
+    const d = dialog(page, "Command palette");
+    await d.getByRole("textbox").fill("buy");
+
+    await expect(d.getByRole("button", { name: "Buy milk" })).toBeVisible();
+    await expect(d.getByRole("button", { name: "Buy eggs" })).toBeVisible();
+    await expect(d.getByRole("button", { name: "Write report" })).toHaveCount(0);
   });
 
   test("matches note text too", async ({ page }) => {
-    await page.getByRole("textbox", { name: "Search this view" }).fill("xyzzy");
-    await expect(rows(page)).toHaveCount(1);
-    await expect(row(page, "Write report")).toBeVisible();
+    await openPalette(page);
+    const d = dialog(page, "Command palette");
+    await d.getByRole("textbox").fill("xyzzy");
+
+    await expect(d.getByRole("button", { name: "Write report" })).toBeVisible();
   });
 
-  test("escape clears the query and restores the list", async ({ page }) => {
-    const search = page.getByRole("textbox", { name: "Search this view" });
-    await search.fill("buy");
-    await expect(rows(page)).toHaveCount(2);
-    await search.press("Escape");
-    await expect(search).toHaveValue("");
-    await expect(rows(page)).toHaveCount(3);
-  });
+  test("opens the matched task", async ({ page }) => {
+    await openPalette(page);
+    const d = dialog(page, "Command palette");
+    await d.getByRole("textbox").fill("Write report");
+    await d.getByRole("button", { name: "Write report" }).first().click();
 
-  test("no matches shows the empty state", async ({ page }) => {
-    await page.getByRole("textbox", { name: "Search this view" }).fill("nonexistent-zzz");
-    await expect(rows(page)).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue("Write report");
   });
 });

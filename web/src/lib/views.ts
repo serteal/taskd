@@ -112,9 +112,56 @@ export function sameView(a: View, b: View): boolean {
 // "manual" enables drag-to-reorder against user_data.order.
 export type SortMode = "smart" | "manual" | "created" | "title";
 
+export const SORT_MODES: SortMode[] = ["smart", "manual", "created", "title"];
+
 export const SORT_LABELS: Record<SortMode, string> = {
   smart: "Smart",
   manual: "Manual",
   created: "Created",
   title: "Title",
 };
+
+// --- per-view presentation prefs (sticky across reloads) -------------------
+//
+// The list/board layout, sort, and group-by are a property of *how you look at
+// a view*, not of the task data — so they live client-side in localStorage,
+// keyed by the view's URL (viewToSearch). Each view remembers its own choice;
+// a reload restores it. Applying a saved view overwrites the target view's
+// stored prefs.
+
+export type BoardGroupBy = "priority" | "project";
+
+export interface ViewPrefs {
+  sort: SortMode;
+  board: boolean;
+  groupBy: BoardGroupBy;
+}
+
+export const DEFAULT_VIEW_PREFS: ViewPrefs = { sort: "smart", board: false, groupBy: "priority" };
+
+const VIEW_PREFS_KEY = "taskd-view-prefs";
+
+function loadAllPrefs(): Record<string, Partial<ViewPrefs>> {
+  try {
+    const raw = localStorage.getItem(VIEW_PREFS_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, Partial<ViewPrefs>>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function readViewPrefs(v: View): ViewPrefs {
+  const stored = loadAllPrefs()[viewToSearch(v)];
+  // Merge over defaults so a partial/old entry never yields undefined fields.
+  return { ...DEFAULT_VIEW_PREFS, ...stored };
+}
+
+export function writeViewPrefs(v: View, prefs: ViewPrefs): void {
+  try {
+    const all = loadAllPrefs();
+    all[viewToSearch(v)] = prefs;
+    localStorage.setItem(VIEW_PREFS_KEY, JSON.stringify(all));
+  } catch {
+    // storage full/blocked — prefs stay session-local this run
+  }
+}

@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNow, useSnapshot, useStore, useTheme, useView } from "./lib/hooks";
-import { viewTitle, type SortMode, SORT_LABELS } from "./lib/views";
+import {
+  viewTitle,
+  viewToSearch,
+  readViewPrefs,
+  writeViewPrefs,
+  type SortMode,
+  type BoardGroupBy,
+} from "./lib/views";
 import { endOfDay } from "./lib/format";
 import { completeTask } from "./lib/actions";
 import { buildAPI, registry, uiBridge, useRegistry } from "./lib/extensions";
@@ -18,9 +25,8 @@ import { ExtensionBoundary } from "./components/ExtensionBoundary";
 import { ShortcutsHelp } from "./components/ShortcutsHelp";
 import { BulkBar } from "./components/BulkBar";
 import { ContextMenu, TaskContextMenu } from "./components/ContextMenu";
+import { ViewMenu } from "./components/ViewMenu";
 import { completeMany } from "./lib/actions";
-
-const SORT_MODES: SortMode[] = ["smart", "manual", "created", "title"];
 
 export default function App() {
   const store = useStore();
@@ -30,13 +36,14 @@ export default function App() {
   const [view, navigate] = useView();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
-  const [sort, setSort] = useState<SortMode>("smart");
-  const [board, setBoard] = useState(false);
-  const [groupBy, setGroupBy] = useState<"priority" | "project">("priority");
+  // Presentation state is per-view and sticky: seed from this view's saved
+  // prefs, then hydrate/persist as the view or the controls change (below).
+  const [sort, setSort] = useState<SortMode>(() => readViewPrefs(view).sort);
+  const [board, setBoard] = useState(() => readViewPrefs(view).board);
+  const [groupBy, setGroupBy] = useState<BoardGroupBy>(() => readViewPrefs(view).groupBy);
   const [adding, setAdding] = useState<NewTaskInitial | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastClicked, setLastClicked] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -86,10 +93,10 @@ export default function App() {
     setOpenId(id);
   };
 
-  const all = view.kind === "completed" || view.kind === "ext" ? [] : visibleTasks(snap.tasks.values(), view, now, sort);
-  // Header search narrows the current view client-side (the replica is in memory).
-  const q = search.trim().toLowerCase();
-  const tasks = q ? all.filter((t) => `${t.title} ${t.notes}`.toLowerCase().includes(q)) : all;
+  const tasks =
+    view.kind === "completed" || view.kind === "ext"
+      ? []
+      : visibleTasks(snap.tasks.values(), view, now, sort);
   const selectedTasks = [...selected].map((id) => snap.tasks.get(id)).filter((t): t is NonNullable<typeof t> => !!t);
 
   // Clicking a row: plain = open detail (clears selection); ⌘/Ctrl = toggle in
@@ -126,17 +133,35 @@ export default function App() {
   // Selection is scoped to a view; leaving it clears the set.
   useEffect(clearSelection, [view.kind, (view as { label?: string }).label, (view as { source?: string }).source]);
 
+  // Sticky per-view presentation. `viewKey` uniquely identifies the current
+  // view (same string as saved in localStorage). On entering a view, hydrate
+  // its saved layout; whenever the controls change, persist them back.
+  const viewKey = viewToSearch(view);
+  useEffect(() => {
+    const p = readViewPrefs(view);
+    setSort(p.sort);
+    setBoard(p.board);
+    setGroupBy(p.groupBy);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewKey]);
+  useEffect(() => {
+    writeViewPrefs(view, { sort, board, groupBy });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewKey, sort, board, groupBy]);
+
   const applySaved = (v: SavedView) => {
     setOpenId(null);
+    // Write the target view's sticky prefs first, so the post-navigate
+    // hydration reads these applied values rather than clobbering them.
+    writeViewPrefs(v.view, { sort: v.sort, board: v.board, groupBy: v.groupBy });
     navigate(v.view);
     setSort(v.sort);
     setBoard(v.board);
     setGroupBy(v.groupBy);
-    setSearch(v.search);
   };
   const saveCurrentView = () => {
     const name = window.prompt("Save this view as:");
-    if (name?.trim()) savedViews.add({ name: name.trim(), view, sort, board, groupBy, search });
+    if (name?.trim()) savedViews.add({ name: name.trim(), view, sort, board, groupBy });
   };
   const openTask = openId !== null ? snap.tasks.get(openId) : undefined;
   const extView = view.kind === "ext" ? registry.viewById(view.id) : undefined;
@@ -182,7 +207,7 @@ export default function App() {
     }),
     // regVersion covers extension command/panel registration; view/now/sel change often.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [snap, store, selectedId, view, now, regVersion, sort, board, groupBy, search, dark],
+    [snap, store, selectedId, view, now, regVersion, sort, board, groupBy, dark],
   );
 
   // Keyboard: list navigation stays out of the way of typing.
@@ -303,68 +328,35 @@ export default function App() {
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
-          <header className="flex items-center gap-2.5 px-3 pb-2 pt-4">
+          <header
+            className="flex items-center gap-2.5 px-3 pb-2 pt-4"
+            data-view-sort={sort}
+            data-view-board={board}
+            data-view-group={groupBy}
+          >
             <h1 className="text-[19px] font-semibold tracking-tight">
               {extView ? extView.title : viewTitle(view)}
             </h1>
             {showSort && <span className="font-mono text-[12px] text-faint">{tasks.length}</span>}
             <div className="ml-auto flex items-center gap-2">
               {showSort && (
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  onKeyDown={(e) => e.key === "Escape" && setSearch("")}
-                  placeholder="Search…"
-                  aria-label="Search this view"
-                  className="w-28 rounded border border-line bg-surface px-2 py-0.5 text-[12px] text-ink placeholder:text-faint focus:w-40 focus:outline-none"
+                <ViewMenu
+                  board={board}
+                  onBoardChange={setBoard}
+                  sort={sort}
+                  onSortChange={setSort}
+                  groupBy={groupBy}
+                  onGroupByChange={setGroupBy}
                 />
-              )}
-              {showSort && !board && (
-                <label className="flex items-center gap-1 font-mono text-[11px] text-faint">
-                  <span className="hidden sm:inline">sort</span>
-                  <select
-                    value={sort}
-                    onChange={(e) => setSort(e.target.value as SortMode)}
-                    className="cursor-pointer rounded border border-line bg-surface px-1 py-0.5 text-[11px] text-ink focus:outline-none"
-                  >
-                    {SORT_MODES.map((m) => (
-                      <option key={m} value={m}>
-                        {SORT_LABELS[m]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-              {showSort && board && (
-                <label className="flex items-center gap-1 font-mono text-[11px] text-faint">
-                  <span className="hidden sm:inline">group</span>
-                  <select
-                    value={groupBy}
-                    onChange={(e) => setGroupBy(e.target.value as "priority" | "project")}
-                    className="cursor-pointer rounded border border-line bg-surface px-1 py-0.5 text-[11px] text-ink focus:outline-none"
-                  >
-                    <option value="priority">Priority</option>
-                    <option value="project">Project</option>
-                  </select>
-                </label>
-              )}
-              {showSort && (
-                <button
-                  onClick={() => setBoard((b) => !b)}
-                  title={board ? "List view" : "Board view"}
-                  className="rounded border border-line px-1.5 py-0.5 font-mono text-[11px] text-mute hover:text-ink"
-                >
-                  {board ? "list" : "board"}
-                </button>
               )}
               {registry.panels.map((p) => (
                 <button
                   key={p.id}
                   onClick={() => togglePanel(p.id)}
-                  className={`rounded border px-1.5 py-0.5 font-mono text-[11px] ${
+                  className={`rounded-md border px-2 py-1 text-[12.5px] ${
                     openPanels.has(p.id)
                       ? "border-accent/50 text-accent"
-                      : "border-line text-mute hover:text-ink"
+                      : "border-line text-mute hover:border-mute hover:text-ink"
                   }`}
                 >
                   {p.title}

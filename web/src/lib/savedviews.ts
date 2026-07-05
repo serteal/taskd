@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 import type { View, SortMode } from "./views";
 
 // Named view presets pinned to the sidebar — a saved combination of the
-// filter (View), sort, board mode, and search. Client-only (localStorage),
+// filter (View), sort, board mode, and group-by. Client-only (localStorage),
 // like the sort/board choices they capture.
 
 export interface SavedView {
@@ -12,7 +12,6 @@ export interface SavedView {
   sort: SortMode;
   board: boolean;
   groupBy: "priority" | "project";
-  search: string;
 }
 
 const KEY = "taskd-saved-views";
@@ -20,6 +19,8 @@ const KEY = "taskd-saved-views";
 function load(): SavedView[] {
   try {
     const raw = localStorage.getItem(KEY);
+    // Older entries may still carry a now-removed `search` field; JSON.parse
+    // keeps it as an ignored extra property, so they load without a migration.
     return raw ? (JSON.parse(raw) as SavedView[]) : [];
   } catch {
     return [];

@@ -1,7 +1,16 @@
 import { test, expect, daysFromNow } from "./fixtures";
-import { rows, row, seed, dragReorder } from "./helpers";
+import { rows, seed, dragReorder } from "./helpers";
 
-const sortSelect = (page: import("@playwright/test").Page) => page.locator("header select");
+// The sort choice now lives in the header's "View options" menu (a popover of
+// radios), and the header exposes the active choice via a data attribute.
+const header = (page: import("@playwright/test").Page) => page.locator("header");
+const openViewMenu = (page: import("@playwright/test").Page) =>
+  header(page).getByRole("button", { name: "View options" }).click();
+const chooseSort = async (page: import("@playwright/test").Page, label: string) => {
+  await openViewMenu(page);
+  await page.getByRole("radio", { name: label, exact: true }).click();
+  await page.keyboard.press("Escape"); // close the popover
+};
 
 test.describe("sort & grouping", () => {
   test("smart sort groups by time pressure", async ({ page, api }) => {
@@ -22,7 +31,8 @@ test.describe("sort & grouping", () => {
     await seed(api, [{ title: "Banana" }, { title: "Apple" }, { title: "Cherry" }]);
     await expect(rows(page)).toHaveCount(3);
 
-    await sortSelect(page).selectOption("title");
+    await chooseSort(page, "Title");
+    await expect(header(page)).toHaveAttribute("data-view-sort", "title");
     await expect(rows(page).nth(0)).toContainText("Apple");
     await expect(rows(page).nth(1)).toContainText("Banana");
     await expect(rows(page).nth(2)).toContainText("Cherry");
@@ -37,13 +47,26 @@ test.describe("sort & grouping", () => {
       { title: "C", due: daysFromNow(3) },
     ]);
     await expect(rows(page)).toHaveCount(3);
-    await expect(sortSelect(page)).toHaveValue("smart");
+    await expect(header(page)).toHaveAttribute("data-view-sort", "smart");
     await expect(rows(page).first()).toContainText("A");
 
     // Drag the last row (C) to the top — a reorder from a non-manual sort.
     await dragReorder(page, "C", "A", false);
 
-    await expect(sortSelect(page)).toHaveValue("manual");
+    await expect(header(page)).toHaveAttribute("data-view-sort", "manual");
     await expect(rows(page).first()).toContainText("C");
+  });
+
+  test("a chosen sort survives a reload", async ({ page, api }) => {
+    await seed(api, [{ title: "Banana" }, { title: "Apple" }]);
+    await expect(rows(page)).toHaveCount(2);
+
+    await chooseSort(page, "Title");
+    await expect(header(page)).toHaveAttribute("data-view-sort", "title");
+
+    await page.reload();
+    await expect(page.locator('[data-testid="conn-status"][data-connected="true"]')).toBeVisible();
+    // The per-view layout is sticky: Title sort is restored, not reset to Smart.
+    await expect(header(page)).toHaveAttribute("data-view-sort", "title");
   });
 });

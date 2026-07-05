@@ -20,7 +20,6 @@ describe("savedViews store", () => {
       sort: "smart",
       board: false,
       groupBy: "priority",
-      search: "",
     });
 
     const snap = savedViews.getSnapshot();
@@ -31,5 +30,21 @@ describe("savedViews store", () => {
     expect(typeof id).toBe("string");
     savedViews.remove(id);
     expect(savedViews.getSnapshot().some((v) => v.id === id)).toBe(false);
+  });
+
+  it("loads legacy entries that still carry a removed `search` field", async () => {
+    // Simulate a pre-migration localStorage payload, then load a fresh module.
+    mem.set(
+      "taskd-saved-views",
+      JSON.stringify([
+        { id: "old", name: "Legacy", view: { kind: "today" }, sort: "smart", board: false, groupBy: "priority", search: "milk" },
+      ]),
+    );
+    vi.resetModules();
+    const { savedViews: reloaded } = await import("./savedviews");
+    const found = reloaded.getSnapshot().find((v) => v.name === "Legacy");
+    expect(found).toBeTruthy();
+    // The old `search` field is simply ignored — no throw, no dependence on it.
+    expect(found!.sort).toBe("smart");
   });
 });

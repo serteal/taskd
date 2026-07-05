@@ -7,7 +7,7 @@ test.describe("command palette", () => {
     await expect(row(page, "A")).toBeVisible();
 
     await runCommand(page, "Sort: Manual");
-    await expect(page.locator("header select")).toHaveValue("manual");
+    await expect(page.locator("header")).toHaveAttribute("data-view-sort", "manual");
   });
 
   test("navigates via a Go to command", async ({ page }) => {

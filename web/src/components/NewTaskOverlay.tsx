@@ -18,6 +18,14 @@ type Override<T> = T | undefined; // undefined = inherit from the parsed title
 const PRIORITY_RE = /^p[1-3]$/;
 const isProject = (l: string) => l.startsWith("project:");
 
+// Grow a textarea to fit its content (wrapped lines + explicit newlines). The
+// CSS caps the height, so past the cap it scrolls instead of pushing the modal.
+function autoGrow(el: HTMLTextAreaElement | null): void {
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight}px`;
+}
+
 export interface NewTaskInitial {
   project?: string; // a "project:x" label
   due?: Date | null;
@@ -43,8 +51,12 @@ export function NewTaskOverlay({
   const [projectOv, setProjectOv] = useState<Override<string | null>>(initial?.project ?? undefined);
   const [keepOpen, setKeepOpen] = useState(false);
   const titleRef = useRef<HTMLTextAreaElement>(null);
+  const descRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => titleRef.current?.focus(), []);
+  // Keep both fields sized to their content as the user types or on reset.
+  useEffect(() => autoGrow(titleRef.current), [title]);
+  useEffect(() => autoGrow(descRef.current), [description]);
 
   const regVersion = useRegistry(); // pick up extension-contributed quick-add tokens
   const parsed = useMemo(
@@ -127,15 +139,16 @@ export function NewTaskOverlay({
             rows={1}
             placeholder="Task name"
             aria-label="Task name"
-            className="w-full resize-none bg-transparent text-[19px] font-semibold leading-tight placeholder:text-faint focus:outline-none"
+            className="max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent text-[19px] font-semibold leading-tight placeholder:text-faint focus:outline-none"
           />
           <textarea
+            ref={descRef}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             rows={1}
             placeholder="Description"
             aria-label="Description"
-            className="mt-1 w-full resize-none bg-transparent text-[13.5px] leading-snug text-mute placeholder:text-faint focus:outline-none"
+            className="mt-1 max-h-[30vh] w-full resize-none overflow-y-auto bg-transparent text-[13.5px] leading-snug text-mute placeholder:text-faint focus:outline-none"
           />
 
           <div className="mt-3 flex flex-wrap items-center gap-2">

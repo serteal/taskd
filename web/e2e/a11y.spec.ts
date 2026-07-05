@@ -19,8 +19,8 @@ test.describe("accessibility", () => {
   });
 
   test("primary controls have accessible names", async ({ page, api }) => {
-    // Toolbar search and sidebar add are reachable by name/label.
-    await expect(page.getByLabel("Search this view")).toBeVisible();
+    // The header View-options menu and the sidebar add are reachable by name.
+    await expect(page.getByRole("button", { name: "View options" })).toBeVisible();
     await expect(page.getByRole("button", { name: /Add task/ })).toBeVisible();
 
     // Row + detail controls are named for assistive tech.
