@@ -1,30 +1,53 @@
 // gcal web half: the calendar-event presenter plus a persistent day-rail
-// panel. The panel docks on the right of the app and shows one day's timeline;
-// a task dragged onto it from anywhere (core rows are drag sources) gets a
-// user_data.timebox on the day, at the dropped time. Default-exports the
-// TaskdExtension the host imports.
+// panel. The panel docks on the right of the app and shows a timeline — one
+// day by default, or a 3-day / week span. A task dragged onto it from anywhere
+// (core rows are drag sources) gets a user_data.timebox on the dropped day, at
+// the dropped time; placed timeboxes can then be moved, resized, keyboard-
+// nudged, or cleared. Default-exports the TaskdExtension the host imports.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import type { ExtensionAPI, Task, TaskdExtension } from "@taskd/extension-api";
 import { makeCalendarPresenter } from "./presenter";
 import { DayColumn } from "./DayColumn";
 import {
   DEFAULT_BOX_MIN,
-  GRID_HEIGHT,
+  DEFAULT_PX_PER_MIN,
   GUTTER_W,
   HOUR_END,
   HOUR_START,
+  MAX_PX_PER_MIN,
+  MIN_PX_PER_MIN,
   MONO,
-  PX_PER_MIN,
-  dropMinutes,
+  VIEW_MODES,
+  addDays,
+  atMinute,
   eventInterval,
   getTimebox,
+  gridHeight,
   isAllDay,
   isGcal,
+  loadView,
+  loadZoom,
+  minuteToY,
   sameDay,
+  saveView,
+  saveZoom,
+  spanFor,
+  startOfDay,
+  viewDays,
+  zoomIn,
+  zoomOut,
+  type Interval,
+  type ViewMode,
 } from "./util";
 
 const SANS = '"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif';
+
+// Per-column minimum width when more than one day is shown; below this the
+// columns scroll horizontally inside the fixed-width panel (panel stays narrow
+// so Day mode reads clean).
+const COL_MIN_W = 118;
 
 // The bit of the generated TaskService client the rail needs. A timeline must
 // show every event on the day, including past ones the source has marked
@@ -38,17 +61,26 @@ type ListClient = {
 
 const hours = Array.from({ length: HOUR_END - HOUR_START + 1 }, (_, i) => HOUR_START + i);
 
+const VIEW_LABEL: Record<ViewMode, string> = { day: "Day", "3day": "3d", week: "Week" };
+
 function DayRail({ api }: { api: ExtensionAPI }) {
   const tasks = api.hooks.useTasks();
   const now = api.hooks.useNow();
 
-  // The shown day is "today + offset"; deriving from an offset (rather than a
-  // pinned Date) keeps it correct across a midnight tick of useNow().
+  const [mode, setMode] = useState<ViewMode>(loadView);
+  // The visible span is anchored at "today + offset" days; deriving from an
+  // offset (rather than a pinned Date) keeps it correct across a midnight tick.
   const [offset, setOffset] = useState(0);
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const day = new Date(today);
-  day.setDate(today.getDate() + offset);
-  const isToday = offset === 0;
+  const [zoom, setZoom] = useState<number>(loadZoom);
+
+  useEffect(() => saveZoom(zoom), [zoom]);
+  useEffect(() => saveView(mode), [mode]);
+
+  const today = startOfDay(now);
+  const anchor = addDays(today, offset);
+  const days = viewDays(anchor, mode);
+  const multi = mode !== "day";
+  const isTodayInView = days.some((d) => sameDay(d, today));
 
   // Calendar events fetched once from the server (includes completed past ones
   // the active replica omits).
@@ -68,41 +100,87 @@ function DayRail({ api }: { api: ExtensionAPI }) {
 
   // Merge fetched events with any live (active) ones from the replica, live
   // winning on id so a freshly-synced event reflects immediately.
-  const events = new Map<string, Task>();
-  for (const t of fetched) events.set(t.id, t);
-  for (const t of tasks) if (isGcal(t)) events.set(t.id, t);
-  const merged = [...events.values()];
+  const merged = useMemo(() => {
+    const events = new Map<string, Task>();
+    for (const t of fetched) events.set(t.id, t);
+    for (const t of tasks) if (isGcal(t)) events.set(t.id, t);
+    return [...events.values()];
+  }, [fetched, tasks]);
   const timedEvents = merged.filter((t) => !isAllDay(t));
-  const allDayEvents = merged.filter((t) => {
-    if (!isAllDay(t)) return false;
-    const iv = eventInterval(t);
-    return iv !== undefined && sameDay(iv.start, day);
-  });
+  const allDayEvents = merged.filter(isAllDay);
+  const allDayForDay = (day: Date) =>
+    allDayEvents.filter((t) => {
+      const iv = eventInterval(t);
+      return iv !== undefined && sameDay(iv.start, day);
+    });
   // Timeboxes come from the live replica (only active tasks can be timeboxed).
   const timeboxed = tasks.filter((t) => !isGcal(t) && getTimebox(t) !== undefined);
 
   const openTask = (id: string) => api.ui.openTask(id);
 
-  // Drop → write user_data.timebox on the SHOWN day (merged, never clobbering
-  // other keys). `id` comes from api.dnd.readTaskId; only tasks in the active
-  // replica can be timeboxed, which is every draggable core row.
-  const dropTimebox = (id: string, offsetY: number) => {
+  // Write user_data.timebox (merged, never clobbering other keys). No
+  // expectedRevision: the timebox is a single-writer, user-owned field (sync
+  // never touches user_data), so optimistic concurrency buys nothing here —
+  // and rapid keyboard nudges would otherwise race the watch echo and 409.
+  // Last-write-wins is correct; we re-read the freshest task so the merge
+  // keeps any other user_data keys current.
+  const writeTimebox = (task: Task, iv: Interval) => {
+    const current = api.getTasks().find((t) => t.id === task.id) ?? task;
+    const userData: Record<string, unknown> = {
+      ...(current.userData ?? {}),
+      timebox: { start: iv.start.toISOString(), end: iv.end.toISOString() },
+    };
+    api.store.update(task.id, { userData }).catch(() => {});
+  };
+
+  // Drop → create a default-length timebox on `day` at the snapped start.
+  const createTimebox = (id: string, day: Date, startMin: number) => {
     const task = tasks.find((t) => t.id === id);
     if (!task) return;
-    const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, dropMinutes(offsetY));
+    const start = atMinute(day, startMin);
     const end = new Date(start.getTime() + DEFAULT_BOX_MIN * 60_000);
-    const userData: Record<string, unknown> = {
-      ...(task.userData ?? {}),
-      timebox: { start: start.toISOString(), end: end.toISOString() },
-    };
-    api.store.update(task.id, { userData, expectedRevision: task.revision }).catch(() => {});
+    writeTimebox(task, { start, end });
   };
 
   // Clear a timebox: spread user_data and drop the timebox key (may leave {}).
+  // Freshest-read + last-write-wins, same rationale as writeTimebox.
   const clearTimebox = (task: Task) => {
-    const userData: Record<string, unknown> = { ...(task.userData ?? {}) };
+    const current = api.getTasks().find((t) => t.id === task.id) ?? task;
+    const userData: Record<string, unknown> = { ...(current.userData ?? {}) };
     delete userData.timebox;
-    api.store.update(task.id, { userData, expectedRevision: task.revision }).catch(() => {});
+    api.store.update(task.id, { userData }).catch(() => {});
+  };
+
+  // ⌘/ctrl + wheel over the timeline zooms. Bound natively so it can be
+  // non-passive (preventDefault the page zoom / scroll).
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      setZoom((z) => (e.deltaY < 0 ? zoomIn(z) : zoomOut(z)));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  const step = spanFor(mode);
+  const focusDay = (day: Date) => {
+    setMode("day");
+    setOffset(Math.round((day.getTime() - today.getTime()) / 86_400_000));
+  };
+
+  const height = gridHeight(zoom);
+  const contentWidth: number | string = multi ? GUTTER_W + days.length * COL_MIN_W : "100%";
+  const stickyLeft: CSSProperties = {
+    width: GUTTER_W,
+    flexShrink: 0,
+    position: "sticky",
+    left: 0,
+    zIndex: 4,
+    background: "var(--surface)",
   };
 
   return (
@@ -118,34 +196,92 @@ function DayRail({ api }: { api: ExtensionAPI }) {
         fontFamily: SANS,
       }}
     >
-      {/* Day navigation header */}
+      {/* Toolbar row: view toggle + zoom */}
       <div
         style={{
           display: "flex",
           alignItems: "center",
           gap: 6,
-          padding: "8px 10px",
+          padding: "6px 10px",
           borderBottom: "1px solid var(--line)",
           flexShrink: 0,
         }}
       >
-        <NavButton label="‹" title="Previous day" onClick={() => setOffset((o) => o - 1)} />
-        <div style={{ flex: 1, minWidth: 0, textAlign: "center" }}>
-          <div
-            style={{
-              fontSize: 13,
-              fontWeight: 600,
-              lineHeight: 1.2,
-              color: isToday ? "var(--accent)" : "var(--ink)",
-            }}
-          >
-            {day.toLocaleDateString(undefined, { weekday: "long" })}
-          </div>
-          <div style={{ fontFamily: MONO, fontSize: 11, color: "var(--muted)" }}>
-            {day.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-          </div>
+        <div style={{ display: "flex", gap: 2 }} role="group" aria-label="View">
+          {VIEW_MODES.map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              aria-pressed={mode === m}
+              title={`${VIEW_LABEL[m]} view`}
+              style={{
+                border: "1px solid var(--line)",
+                borderRadius: 5,
+                background: mode === m ? "var(--accent)" : "var(--surface)",
+                color: mode === m ? "var(--bg)" : "var(--muted)",
+                fontFamily: MONO,
+                fontSize: 10,
+                padding: "3px 7px",
+                cursor: "pointer",
+              }}
+            >
+              {VIEW_LABEL[m]}
+            </button>
+          ))}
         </div>
-        {!isToday && (
+        <div style={{ flex: 1 }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 2 }} role="group" aria-label="Zoom">
+          <ZoomButton label="−" title="Zoom out" onClick={() => setZoom(zoomOut)} disabled={zoom <= MIN_PX_PER_MIN + 1e-6} />
+          <span
+            style={{ fontFamily: MONO, fontSize: 10, color: "var(--faint)", minWidth: 30, textAlign: "center" }}
+            title="Zoom level"
+          >
+            {Math.round((zoom / DEFAULT_PX_PER_MIN) * 100)}%
+          </span>
+          <ZoomButton label="+" title="Zoom in" onClick={() => setZoom(zoomIn)} disabled={zoom >= MAX_PX_PER_MIN - 1e-6} />
+        </div>
+      </div>
+
+      {/* Navigation row: prev / title / today / next */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "6px 10px",
+          borderBottom: "1px solid var(--line)",
+          flexShrink: 0,
+        }}
+      >
+        <NavButton
+          label="‹"
+          title={multi ? "Previous period" : "Previous day"}
+          onClick={() => setOffset((o) => o - step)}
+        />
+        <div style={{ flex: 1, minWidth: 0, textAlign: "center" }}>
+          {multi ? (
+            <div style={{ fontSize: 12, fontWeight: 600, color: isTodayInView ? "var(--accent)" : "var(--ink)" }}>
+              {rangeLabel(days[0], days[days.length - 1])}
+            </div>
+          ) : (
+            <>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  lineHeight: 1.2,
+                  color: isTodayInView ? "var(--accent)" : "var(--ink)",
+                }}
+              >
+                {days[0].toLocaleDateString(undefined, { weekday: "long" })}
+              </div>
+              <div style={{ fontFamily: MONO, fontSize: 11, color: "var(--muted)" }}>
+                {days[0].toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+              </div>
+            </>
+          )}
+        </div>
+        {!isTodayInView && (
           <button
             onClick={() => setOffset(0)}
             title="Back to today"
@@ -164,101 +300,149 @@ function DayRail({ api }: { api: ExtensionAPI }) {
             today
           </button>
         )}
-        <NavButton label="›" title="Next day" onClick={() => setOffset((o) => o + 1)} />
+        <NavButton label="›" title={multi ? "Next period" : "Next day"} onClick={() => setOffset((o) => o + step)} />
       </div>
 
-      {/* Scrolling timeline: all-day strip + hour body */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", background: "var(--surface)" }}>
-        {/* All-day strip (sticky) */}
-        <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 2, background: "var(--surface)" }}>
-          <div
-            style={{
-              width: GUTTER_W,
-              flexShrink: 0,
-              borderBottom: "1px solid var(--line)",
-              padding: "3px 4px",
-              fontFamily: MONO,
-              fontSize: 9,
-              textTransform: "uppercase",
-              letterSpacing: "0.06em",
-              color: "var(--faint)",
-              textAlign: "right",
-            }}
-          >
-            all-day
-          </div>
-          <div
-            style={{
-              flex: 1,
-              minWidth: 0,
-              minHeight: 22,
-              boxSizing: "border-box",
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 3,
-              padding: 3,
-              borderLeft: "1px solid var(--line)",
-              borderBottom: "1px solid var(--line)",
-              background: isToday ? "color-mix(in srgb, var(--accent) 6%, transparent)" : "transparent",
-            }}
-          >
-            {allDayEvents.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => openTask(t.id)}
-                title={t.title}
-                style={{
-                  maxWidth: "100%",
-                  textAlign: "left",
-                  border: "1px solid color-mix(in srgb, var(--accent) 42%, transparent)",
-                  background: "color-mix(in srgb, var(--accent) 16%, var(--surface))",
-                  color: "var(--ink)",
-                  borderRadius: 4,
-                  padding: "1px 6px",
-                  fontSize: 11,
-                  cursor: "pointer",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {t.title}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Hour body: label gutter + the day column (drop target) */}
-        <div style={{ display: "flex" }}>
-          <div style={{ width: GUTTER_W, flexShrink: 0, position: "relative", height: GRID_HEIGHT }}>
-            {hours.map((h) => (
-              <div
-                key={h}
-                style={{
-                  position: "absolute",
-                  top: (h - HOUR_START) * 60 * PX_PER_MIN,
-                  right: 6,
-                  transform: "translateY(-6px)",
-                  fontFamily: MONO,
-                  fontSize: 10,
-                  color: "var(--faint)",
-                }}
-              >
-                {h}:00
+      {/* Scrolling timeline: (per-day headers) + all-day strip + hour body */}
+      <div
+        ref={scrollRef}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          overflowX: multi ? "auto" : "hidden",
+          background: "var(--surface)",
+        }}
+      >
+        <div style={{ width: contentWidth }}>
+          {/* Sticky header block: per-day labels (multi only) + all-day strip */}
+          <div style={{ position: "sticky", top: 0, zIndex: 5, background: "var(--surface)" }}>
+            {multi && (
+              <div style={{ display: "flex", borderBottom: "1px solid var(--line)" }}>
+                <div style={stickyLeft} />
+                {days.map((d) => (
+                  <button
+                    key={+d}
+                    onClick={() => focusDay(d)}
+                    title={`Focus ${d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}`}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      textAlign: "center",
+                      padding: "3px 2px",
+                      border: "none",
+                      borderLeft: "1px solid var(--line)",
+                      background: sameDay(d, today) ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "transparent",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <div style={{ fontSize: 11, fontWeight: 600, color: sameDay(d, today) ? "var(--accent)" : "var(--ink)" }}>
+                      {d.toLocaleDateString(undefined, { weekday: "short" })}
+                    </div>
+                    <div style={{ fontFamily: MONO, fontSize: 10, color: "var(--muted)" }}>{d.getDate()}</div>
+                  </button>
+                ))}
               </div>
+            )}
+            <div style={{ display: "flex" }}>
+              <div
+                style={{
+                  ...stickyLeft,
+                  borderBottom: "1px solid var(--line)",
+                  padding: "3px 4px",
+                  boxSizing: "border-box",
+                  fontFamily: MONO,
+                  fontSize: 9,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  color: "var(--faint)",
+                  textAlign: "right",
+                }}
+              >
+                all-day
+              </div>
+              {days.map((d) => (
+                <div
+                  key={+d}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    minHeight: 22,
+                    boxSizing: "border-box",
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 3,
+                    padding: 3,
+                    borderLeft: "1px solid var(--line)",
+                    borderBottom: "1px solid var(--line)",
+                    background: sameDay(d, today) ? "color-mix(in srgb, var(--accent) 6%, transparent)" : "transparent",
+                  }}
+                >
+                  {allDayForDay(d).map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => openTask(t.id)}
+                      title={t.title}
+                      style={{
+                        maxWidth: "100%",
+                        textAlign: "left",
+                        border: "1px solid color-mix(in srgb, var(--accent) 42%, transparent)",
+                        background: "color-mix(in srgb, var(--accent) 16%, var(--surface))",
+                        color: "var(--ink)",
+                        borderRadius: 4,
+                        padding: "1px 6px",
+                        fontSize: 11,
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {t.title}
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Hour body: label gutter + one drop-target column per day */}
+          <div style={{ display: "flex" }}>
+            <div style={{ ...stickyLeft, position: "sticky", height }}>
+              {hours.map((h) => (
+                <div
+                  key={h}
+                  style={{
+                    position: "absolute",
+                    top: minuteToY(h * 60, zoom),
+                    right: 6,
+                    transform: "translateY(-6px)",
+                    fontFamily: MONO,
+                    fontSize: 10,
+                    color: "var(--faint)",
+                  }}
+                >
+                  {h}:00
+                </div>
+              ))}
+            </div>
+            {days.map((d) => (
+              <DayColumn
+                key={+d}
+                day={d}
+                isToday={sameDay(d, today)}
+                now={now}
+                pxPerMin={zoom}
+                timedEvents={timedEvents}
+                timeboxed={timeboxed}
+                onOpen={openTask}
+                onSetTimebox={writeTimebox}
+                onClearTimebox={clearTimebox}
+                onCreateTimebox={createTimebox}
+                readTaskId={api.dnd.readTaskId}
+              />
             ))}
           </div>
-          <DayColumn
-            day={day}
-            isToday={isToday}
-            now={now}
-            timedEvents={timedEvents}
-            timeboxed={timeboxed}
-            onOpen={openTask}
-            onClearTimebox={clearTimebox}
-            readTaskId={api.dnd.readTaskId}
-            onDrop={dropTimebox}
-          />
         </div>
       </div>
 
@@ -272,10 +456,20 @@ function DayRail({ api }: { api: ExtensionAPI }) {
           color: "var(--faint)",
         }}
       >
-        Drag a task here to timebox it
+        Drag a task here to timebox it · drag or ↑↓ to move · ⌘-scroll to zoom
       </div>
     </div>
   );
+}
+
+// Compact label for a multi-day span, e.g. "Jul 6 – 12" or "Jun 30 – Jul 6".
+function rangeLabel(a: Date, b: Date): string {
+  const left = a.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const right = b.toLocaleDateString(
+    undefined,
+    a.getMonth() === b.getMonth() ? { day: "numeric" } : { month: "short", day: "numeric" },
+  );
+  return `${left} – ${right}`;
 }
 
 function NavButton({ label, title, onClick }: { label: string; title: string; onClick: () => void }) {
@@ -298,6 +492,45 @@ function NavButton({ label, title, onClick }: { label: string; title: string; on
         fontSize: 14,
         lineHeight: 1,
         cursor: "pointer",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function ZoomButton({
+  label,
+  title,
+  onClick,
+  disabled,
+}: {
+  label: string;
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      disabled={disabled}
+      style={{
+        flexShrink: 0,
+        width: 20,
+        height: 20,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        border: "1px solid var(--line)",
+        borderRadius: 5,
+        background: "var(--surface)",
+        color: disabled ? "var(--faint)" : "var(--ink)",
+        fontSize: 13,
+        lineHeight: 1,
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.5 : 1,
       }}
     >
       {label}
