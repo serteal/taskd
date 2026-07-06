@@ -47,6 +47,7 @@ export function CompletedList() {
         return (
           <div
             key={t.id}
+            data-testid="completed-row"
             className="group flex items-center gap-2.5 border-b border-line/70 px-3 py-[7px]"
           >
             <span className="flex h-[16px] w-[16px] shrink-0 items-center justify-center rounded-full border border-accent bg-accent text-white">

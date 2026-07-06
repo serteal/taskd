@@ -29,11 +29,17 @@ export function DetailPanel({
   task,
   onClose,
   onOpenTask,
+  width,
+  resizeHandle,
 }: {
   task: Task;
   onClose: () => void;
   /** Navigate the panel to another task (parent breadcrumb, subtask rows). */
   onOpenTask?: (id: string) => void;
+  /** Width in px (the drag-resizable preference). Falls back to the default. */
+  width?: number;
+  /** The drag handle on the panel's left edge. */
+  resizeHandle?: React.ReactNode;
 }) {
   const store = useStore();
   const snap = useSnapshot();
@@ -46,19 +52,26 @@ export function DetailPanel({
   const [customRecur, setCustomRecur] = useState<string | null>(null);
   const [customRecurErr, setCustomRecurErr] = useState(false);
 
-  // The replica is the source of truth: whenever this task changes under
-  // us (watch event, other window, or switching to a different task), reset
-  // unsaved field state to it. Includes the label-add draft, which otherwise
-  // leaks from one task into the next when you switch rows without
-  // submitting it.
+  // The replica is the source of truth for STORED fields: when the task's
+  // title/notes change underneath us (watch event, other window), the inputs
+  // re-sync to them. Keyed on the values — not the task object — so a
+  // background echo of our own save never touches an input mid-edit.
   useEffect(() => {
     setTitle(task.title);
     setNotes(task.notes);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task.id, task.title, task.notes]);
+
+  // TRANSIENT drafts (label-add, subtask-add, the Custom… recurrence text)
+  // mirror nothing stored, so only switching to a different task resets them —
+  // a watch echo arriving while the user is typing must not wipe the draft
+  // (or unmount the input under their cursor).
+  useEffect(() => {
     setNewLabel("");
     setNewSubtask("");
     setCustomRecur(null);
     setCustomRecurErr(false);
-  }, [task]);
+  }, [task.id]);
 
   const save = (patch: Parameters<typeof store.update>[1]) =>
     store.update(task.id, { ...patch, expectedRevision: task.revision }).catch(() => {});
@@ -140,8 +153,10 @@ export function DetailPanel({
       // which left this panel's own fields unable to close it at all — the
       // close button's "esc" hint was a lie whenever a field had focus.
       onKeyDown={(e) => e.key === "Escape" && onClose()}
-      className="flex h-full w-[340px] shrink-0 flex-col border-l border-line bg-surface"
+      style={{ width: width ?? 340 }}
+      className="relative flex h-full shrink-0 flex-col border-l border-line bg-surface"
     >
+      {resizeHandle}
       <div className="flex items-center justify-between border-b border-line px-3 py-2">
         <span className="font-mono text-[11px] text-faint">{shortId(task.id)}</span>
         <button

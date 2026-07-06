@@ -17,11 +17,10 @@ const gotoCompleted = (page: Page) =>
 const gotoAllTasks = (page: Page) =>
   page.locator('[data-testid="side-item"][data-label="All tasks"]').click();
 
-// Every row in the Completed view is a `div.group` (see CompletedList.tsx);
-// no other component uses a plain (non-namespaced) "group" class while this
-// view is mounted, since TaskList unmounts when the sidebar swaps to
-// "Completed". Confirmed by reading every component for `className="group`.
-const completedRows = (page: Page) => page.locator("div.group");
+// Completed rows carry an explicit testid — counting by Tailwind's "group"
+// class broke the moment an unrelated component (the resize handles) also
+// used it.
+const completedRows = (page: Page) => page.getByTestId("completed-row");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
