@@ -21,6 +21,9 @@ type FileConfig struct {
 	Listen string `yaml:"listen,omitempty"`
 	// Optional unix socket to also serve on (created 0600).
 	Socket string `yaml:"socket,omitempty"`
+	// Open the web app in a browser on startup: true always opens, false
+	// suppresses even the first-run auto-open; unset opens on first run only.
+	Open *bool `yaml:"open,omitempty"`
 	// Extension host settings.
 	Extensions ExtensionsConfig `yaml:"extensions,omitempty"`
 }

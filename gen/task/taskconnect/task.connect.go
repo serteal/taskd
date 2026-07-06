@@ -71,10 +71,22 @@ type TaskServiceClient interface {
 	GetTask(context.Context, *connect.Request[task.GetTaskRequest]) (*connect.Response[task.GetTaskResponse], error)
 	// Updates the fields named by update_mask, reading new values from task.
 	// Maskable paths: "title", "notes", "labels", "due_time",
-	// "completed_time", "user_data".
+	// "completed_time", "user_data", "recurrence", "parent_id".
 	// Masking a path whose value is unset clears it (unset due_time removes
-	// the due date; unset completed_time re-opens the task). Completing a task
+	// the due date; unset completed_time re-opens the task; "" recurrence
+	// stops recurring; "" parent_id detaches to top-level). Completing a task
 	// IS setting completed_time — there is no separate RPC.
+	//
+	// Recurrence roll-forward: completing an active (incomplete) recurring
+	// task — masking a non-zero completed_time on a task that had none and
+	// whose recurrence != "" — does NOT complete it. In one transaction the
+	// server (1) inserts a frozen archive copy — a new local task with the
+	// same fields, completed at the requested time and no recurrence — and
+	// (2) advances the live task's due_time to the next occurrence, leaving
+	// it active (other masked fields apply normally). The response then
+	// carries the advanced live task plus the archive in spawned_occurrence.
+	// Adding recurrence to an already-completed task, or re-masking completed
+	// on one, is a plain update that leaves it completed (no roll-forward).
 	UpdateTask(context.Context, *connect.Request[task.UpdateTaskRequest]) (*connect.Response[task.UpdateTaskResponse], error)
 	// Permanently deletes a task, local or external.
 	DeleteTask(context.Context, *connect.Request[task.DeleteTaskRequest]) (*connect.Response[task.DeleteTaskResponse], error)
@@ -224,10 +236,22 @@ type TaskServiceHandler interface {
 	GetTask(context.Context, *connect.Request[task.GetTaskRequest]) (*connect.Response[task.GetTaskResponse], error)
 	// Updates the fields named by update_mask, reading new values from task.
 	// Maskable paths: "title", "notes", "labels", "due_time",
-	// "completed_time", "user_data".
+	// "completed_time", "user_data", "recurrence", "parent_id".
 	// Masking a path whose value is unset clears it (unset due_time removes
-	// the due date; unset completed_time re-opens the task). Completing a task
+	// the due date; unset completed_time re-opens the task; "" recurrence
+	// stops recurring; "" parent_id detaches to top-level). Completing a task
 	// IS setting completed_time — there is no separate RPC.
+	//
+	// Recurrence roll-forward: completing an active (incomplete) recurring
+	// task — masking a non-zero completed_time on a task that had none and
+	// whose recurrence != "" — does NOT complete it. In one transaction the
+	// server (1) inserts a frozen archive copy — a new local task with the
+	// same fields, completed at the requested time and no recurrence — and
+	// (2) advances the live task's due_time to the next occurrence, leaving
+	// it active (other masked fields apply normally). The response then
+	// carries the advanced live task plus the archive in spawned_occurrence.
+	// Adding recurrence to an already-completed task, or re-masking completed
+	// on one, is a plain update that leaves it completed (no roll-forward).
 	UpdateTask(context.Context, *connect.Request[task.UpdateTaskRequest]) (*connect.Response[task.UpdateTaskResponse], error)
 	// Permanently deletes a task, local or external.
 	DeleteTask(context.Context, *connect.Request[task.DeleteTaskRequest]) (*connect.Response[task.DeleteTaskResponse], error)

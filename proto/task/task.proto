@@ -28,10 +28,22 @@ service TaskService {
 
   // Updates the fields named by update_mask, reading new values from task.
   // Maskable paths: "title", "notes", "labels", "due_time",
-  // "completed_time", "user_data".
+  // "completed_time", "user_data", "recurrence", "parent_id".
   // Masking a path whose value is unset clears it (unset due_time removes
-  // the due date; unset completed_time re-opens the task). Completing a task
+  // the due date; unset completed_time re-opens the task; "" recurrence
+  // stops recurring; "" parent_id detaches to top-level). Completing a task
   // IS setting completed_time — there is no separate RPC.
+  //
+  // Recurrence roll-forward: completing an active (incomplete) recurring
+  // task — masking a non-zero completed_time on a task that had none and
+  // whose recurrence != "" — does NOT complete it. In one transaction the
+  // server (1) inserts a frozen archive copy — a new local task with the
+  // same fields, completed at the requested time and no recurrence — and
+  // (2) advances the live task's due_time to the next occurrence, leaving
+  // it active (other masked fields apply normally). The response then
+  // carries the advanced live task plus the archive in spawned_occurrence.
+  // Adding recurrence to an already-completed task, or re-masking completed
+  // on one, is a plain update that leaves it completed (no roll-forward).
   rpc UpdateTask(UpdateTaskRequest) returns (UpdateTaskResponse);
 
   // Permanently deletes a task, local or external.
@@ -100,6 +112,26 @@ message Task {
   // convention top-level keys are namespaced per extension ("timebox",
   // "gcal", …) so extensions coexist without a registry.
   google.protobuf.Struct user_data = 13;
+  // A recurring task's rule as a canonical RRULE subset, or "" for a one-off.
+  // Grammar: FREQ=DAILY|WEEKLY|MONTHLY|YEARLY, optional INTERVAL=n (n>=1),
+  // optional BYDAY=MO,TU,WE,TH,FR,SA,SU (WEEKLY only). Anything else is
+  // rejected. USER-OWNED and only ever set on LOCAL tasks (source ""):
+  // UpsertExternalTasks never writes it, and setting it on a synced task is
+  // INVALID_ARGUMENT. A recurring task is never itself completed — completing
+  // it rolls the series forward (see UpdateTask): the live task stays active
+  // with its due_time advanced, and a non-recurring archive copy captures the
+  // completion. Roll-forward preserves the occurrence's LOCAL wall-clock time
+  // (a 09:00 task stays 09:00 across a DST change, so its absolute instant
+  // shifts); the daemon's timezone is authoritative.
+  string recurrence = 14;
+  // Parent task id, or "" for a top-level task. USER-OWNED (upserts never set
+  // it). Hierarchy is capped at ONE level: a parent must itself be top-level
+  // (empty parent_id), and a task that already has children cannot be given a
+  // parent. The parent MAY be a synced task (a local checklist under a PR is
+  // supported). Deleting a parent does not cascade — its children are
+  // re-parented to top-level (parent_id "") in the same transaction; the same
+  // holds for children of a synced parent pruned by a full_snapshot upsert.
+  string parent_id = 15;
   google.protobuf.Timestamp create_time = 11;
   google.protobuf.Timestamp update_time = 12;
 }
@@ -120,7 +152,8 @@ message TaskFilter {
   google.protobuf.Timestamp due_after = 5;
   // Unset: both. True: only tasks with a due date. False: only without.
   optional bool has_due = 6;
-  // Exact source match; "" is not a filter (unset means any source).
+  // Source match by proto3 field presence: unset means any source; set is an
+  // exact match, so an explicitly-set "" matches only local tasks (source "").
   optional string source = 7;
   // Case-insensitive substring match over title and notes.
   string text = 8;
@@ -131,6 +164,12 @@ message CreateTaskRequest {
   string notes = 2;
   repeated string labels = 3;
   google.protobuf.Timestamp due_time = 4;
+  // Optional canonical RRULE subset (see Task.recurrence); "" for a one-off.
+  // Rejected if malformed.
+  string recurrence = 5;
+  // Optional parent task id (see Task.parent_id); "" for top-level. The parent
+  // must exist and be top-level, or the request is rejected.
+  string parent_id = 6;
 }
 
 message CreateTaskResponse {
@@ -157,6 +196,11 @@ message UpdateTaskRequest {
 
 message UpdateTaskResponse {
   Task task = 1;
+  // Set ONLY when completing a recurring task rolled the series forward: the
+  // frozen archive copy that captured the completion (see UpdateTask). Clients
+  // use it to undo the completion precisely — delete this copy and clear the
+  // live task's advanced due_time. Unset on every other update.
+  Task spawned_occurrence = 2;
 }
 
 message DeleteTaskRequest {
@@ -167,10 +211,10 @@ message DeleteTaskResponse {}
 
 message ListTasksRequest {
   TaskFilter filter = 1;
-  // One of "created", "updated", "due", "title", optionally followed by
-  // " asc" or " desc". Defaults to "created desc". Ties break by id, so
-  // ordering is total and pagination is stable. With "due", tasks without a
-  // due date sort last.
+  // One of "created", "updated", "due", "title", "completed", optionally
+  // followed by " asc" or " desc". Defaults to "created desc". Ties break by
+  // id, so ordering is total and pagination is stable. With "due" or
+  // "completed", tasks without that timestamp set sort last.
   string order_by = 2;
   // Defaults to 100, capped at 1000.
   int32 page_size = 3;

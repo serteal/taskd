@@ -68,7 +68,7 @@ func msTs(ms int64) *timestamppb.Timestamp {
 
 func mustCreate(t *testing.T, s *Store, title string, labels ...string) *taskpb.Task {
 	t.Helper()
-	task, err := s.Create(context.Background(), title, "", labels, nil)
+	task, err := s.Create(context.Background(), title, "", labels, nil, "", "")
 	if err != nil {
 		t.Fatalf("Create(%q): %v", title, err)
 	}
@@ -89,7 +89,7 @@ func TestCreateGetRoundtrip(t *testing.T) {
 
 	wantCreate := clk.cur.UnixMilli()
 	due := timestamppb.New(time.Date(2026, 2, 1, 0, 0, 0, 987654321, time.UTC))
-	created, err := s.Create(ctx, "  Buy milk  ", "2 liters", []string{" home ", "errand", "home", "errand "}, due)
+	created, err := s.Create(ctx, "  Buy milk  ", "2 liters", []string{" home ", "errand", "home", "errand "}, due, "", "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestCreateNilDue(t *testing.T) {
 func TestCreateEmptyTitle(t *testing.T) {
 	s, _ := newTestStore(t)
 	for _, title := range []string{"", "   ", "\t\n"} {
-		if _, err := s.Create(context.Background(), title, "", nil, nil); !errors.Is(err, ErrInvalid) {
+		if _, err := s.Create(context.Background(), title, "", nil, nil, "", ""); !errors.Is(err, ErrInvalid) {
 			t.Errorf("Create(%q) err = %v, want ErrInvalid", title, err)
 		}
 	}
@@ -155,7 +155,7 @@ func TestCreateEmptyTitle(t *testing.T) {
 
 func TestCreateEmptyLabel(t *testing.T) {
 	s, _ := newTestStore(t)
-	if _, err := s.Create(context.Background(), "t", "", []string{"ok", "  "}, nil); !errors.Is(err, ErrInvalid) {
+	if _, err := s.Create(context.Background(), "t", "", []string{"ok", "  "}, nil, "", ""); !errors.Is(err, ErrInvalid) {
 		t.Errorf("Create with blank label err = %v, want ErrInvalid", err)
 	}
 }
@@ -175,7 +175,7 @@ func TestUpdateHappyPath(t *testing.T) {
 	wantUpdate := clk.cur.UnixMilli()
 	due := msTs(5000)
 	done := msTs(6000)
-	updated, err := s.Update(ctx, task.GetId(), task.GetRevision(), func(tk *taskpb.Task) error {
+	updated, _, err := s.Update(ctx, task.GetId(), task.GetRevision(), func(tk *taskpb.Task) error {
 		tk.Title = "  after  "
 		tk.Notes = "new notes"
 		tk.Labels = []string{" b ", "a", "b"}
@@ -223,7 +223,7 @@ func TestUpdateRevisionMismatch(t *testing.T) {
 	task := mustCreate(t, s, "t")
 
 	mutateRan := false
-	_, err := s.Update(ctx, task.GetId(), 99, func(*taskpb.Task) error {
+	_, _, err := s.Update(ctx, task.GetId(), 99, func(*taskpb.Task) error {
 		mutateRan = true
 		return nil
 	})
@@ -235,14 +235,14 @@ func TestUpdateRevisionMismatch(t *testing.T) {
 	}
 
 	// Zero means last-write-wins.
-	if _, err := s.Update(ctx, task.GetId(), 0, func(*taskpb.Task) error { return nil }); err != nil {
+	if _, _, err := s.Update(ctx, task.GetId(), 0, func(*taskpb.Task) error { return nil }); err != nil {
 		t.Errorf("Update with expectedRevision 0: %v", err)
 	}
 }
 
 func TestUpdateNotFound(t *testing.T) {
 	s, _ := newTestStore(t)
-	_, err := s.Update(context.Background(), "nope", 0, func(*taskpb.Task) error { return nil })
+	_, _, err := s.Update(context.Background(), "nope", 0, func(*taskpb.Task) error { return nil })
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
@@ -254,7 +254,7 @@ func TestUpdateMutateErrorPropagates(t *testing.T) {
 	task := mustCreate(t, s, "t")
 
 	boom := errors.New("boom")
-	_, err := s.Update(ctx, task.GetId(), 0, func(*taskpb.Task) error { return boom })
+	_, _, err := s.Update(ctx, task.GetId(), 0, func(*taskpb.Task) error { return boom })
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want the mutate error", err)
 	}
@@ -273,7 +273,7 @@ func TestUpdateMutateSeesCurrentState(t *testing.T) {
 	ctx := context.Background()
 	task := mustCreate(t, s, "current title", "x")
 
-	_, err := s.Update(ctx, task.GetId(), 0, func(tk *taskpb.Task) error {
+	_, _, err := s.Update(ctx, task.GetId(), 0, func(tk *taskpb.Task) error {
 		if tk.GetTitle() != "current title" || !slices.Equal(tk.GetLabels(), []string{"x"}) {
 			t.Errorf("mutate saw %q %v, want stored state", tk.GetTitle(), tk.GetLabels())
 		}
@@ -296,7 +296,7 @@ func TestUpdateImmutableFieldsIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := s.Update(ctx, task.GetId(), 0, func(tk *taskpb.Task) error {
+	updated, _, err := s.Update(ctx, task.GetId(), 0, func(tk *taskpb.Task) error {
 		tk.Id = "evil-id"
 		tk.Source = "evil"
 		tk.ExternalRef = "evil-ref"
@@ -338,14 +338,14 @@ func TestUpdateInvalid(t *testing.T) {
 	ctx := context.Background()
 	task := mustCreate(t, s, "t")
 
-	_, err := s.Update(ctx, task.GetId(), 0, func(tk *taskpb.Task) error {
+	_, _, err := s.Update(ctx, task.GetId(), 0, func(tk *taskpb.Task) error {
 		tk.Title = "   "
 		return nil
 	})
 	if !errors.Is(err, ErrInvalid) {
 		t.Errorf("blank title err = %v, want ErrInvalid", err)
 	}
-	_, err = s.Update(ctx, task.GetId(), 0, func(tk *taskpb.Task) error {
+	_, _, err = s.Update(ctx, task.GetId(), 0, func(tk *taskpb.Task) error {
 		tk.Labels = []string{""}
 		return nil
 	})
@@ -360,7 +360,7 @@ func TestDeleteCascadesLabels(t *testing.T) {
 	doomed := mustCreate(t, s, "doomed", "shared", "only-doomed")
 	mustCreate(t, s, "survivor", "shared")
 
-	if err := s.Delete(ctx, doomed.GetId()); err != nil {
+	if _, err := s.Delete(ctx, doomed.GetId()); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if _, err := s.Get(ctx, doomed.GetId()); !errors.Is(err, ErrNotFound) {
@@ -377,7 +377,7 @@ func TestDeleteCascadesLabels(t *testing.T) {
 
 func TestDeleteNotFound(t *testing.T) {
 	s, _ := newTestStore(t)
-	if err := s.Delete(context.Background(), "nope"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Delete(context.Background(), "nope"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }

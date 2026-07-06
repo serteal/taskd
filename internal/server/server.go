@@ -26,6 +26,8 @@ var updatablePaths = map[string]struct{}{
 	"due_time":       {},
 	"completed_time": {},
 	"user_data":      {},
+	"recurrence":     {},
+	"parent_id":      {},
 }
 
 type Server struct {
@@ -45,7 +47,8 @@ func (s *Server) Handler() (string, http.Handler) {
 var _ taskconnect.TaskServiceHandler = (*Server)(nil)
 
 func (s *Server) CreateTask(ctx context.Context, req *connect.Request[taskpb.CreateTaskRequest]) (*connect.Response[taskpb.CreateTaskResponse], error) {
-	t, err := s.st.Create(ctx, req.Msg.GetTitle(), req.Msg.GetNotes(), req.Msg.GetLabels(), req.Msg.GetDueTime())
+	t, err := s.st.Create(ctx, req.Msg.GetTitle(), req.Msg.GetNotes(), req.Msg.GetLabels(),
+		req.Msg.GetDueTime(), req.Msg.GetRecurrence(), req.Msg.GetParentId())
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -76,11 +79,11 @@ func (s *Server) UpdateTask(ctx context.Context, req *connect.Request[taskpb.Upd
 	for _, p := range paths {
 		if _, ok := updatablePaths[p]; !ok {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
-				fmt.Errorf("path %q is not updatable (updatable: title, notes, labels, due_time, completed_time, user_data)", p))
+				fmt.Errorf("path %q is not updatable (updatable: title, notes, labels, due_time, completed_time, user_data, recurrence, parent_id)", p))
 		}
 	}
 	src := msg.GetTask()
-	t, err := s.st.Update(ctx, msg.GetId(), msg.GetExpectedRevision(), func(t *taskpb.Task) error {
+	t, spawned, err := s.st.Update(ctx, msg.GetId(), msg.GetExpectedRevision(), func(t *taskpb.Task) error {
 		for _, p := range paths {
 			switch p {
 			case "title":
@@ -95,6 +98,10 @@ func (s *Server) UpdateTask(ctx context.Context, req *connect.Request[taskpb.Upd
 				t.CompletedTime = src.GetCompletedTime()
 			case "user_data":
 				t.UserData = src.GetUserData()
+			case "recurrence":
+				t.Recurrence = src.GetRecurrence()
+			case "parent_id":
+				t.ParentId = src.GetParentId()
 			}
 		}
 		return nil
@@ -102,18 +109,28 @@ func (s *Server) UpdateTask(ctx context.Context, req *connect.Request[taskpb.Upd
 	if err != nil {
 		return nil, mapErr(err)
 	}
+	// Both rows of a recurrence roll-forward publish: the advanced live task
+	// and the archived occurrence.
 	s.hub.PublishTask(t)
-	return connect.NewResponse(&taskpb.UpdateTaskResponse{Task: t}), nil
+	if spawned != nil {
+		s.hub.PublishTask(spawned)
+	}
+	return connect.NewResponse(&taskpb.UpdateTaskResponse{Task: t, SpawnedOccurrence: spawned}), nil
 }
 
 func (s *Server) DeleteTask(ctx context.Context, req *connect.Request[taskpb.DeleteTaskRequest]) (*connect.Response[taskpb.DeleteTaskResponse], error) {
 	if req.Msg.GetId() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id is required"))
 	}
-	if err := s.st.Delete(ctx, req.Msg.GetId()); err != nil {
+	reparented, err := s.st.Delete(ctx, req.Msg.GetId())
+	if err != nil {
 		return nil, mapErr(err)
 	}
 	s.hub.PublishDeleted(req.Msg.GetId())
+	// Children re-parented to root by the delete each publish their new state.
+	for _, child := range reparented {
+		s.hub.PublishTask(child)
+	}
 	return connect.NewResponse(&taskpb.DeleteTaskResponse{}), nil
 }
 
@@ -142,6 +159,9 @@ func (s *Server) UpsertExternalTasks(ctx context.Context, req *connect.Request[t
 	}
 	for _, id := range res.DeletedIDs {
 		s.hub.PublishDeleted(id)
+	}
+	for _, t := range res.Reparented {
+		s.hub.PublishTask(t)
 	}
 	return connect.NewResponse(&taskpb.UpsertExternalTasksResponse{
 		Created:   res.Created,

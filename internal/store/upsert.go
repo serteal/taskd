@@ -19,6 +19,7 @@ type UpsertResult struct {
 	Created, Updated, Unchanged, Deleted int32
 	Changed                              []*taskpb.Task // final state of created+updated tasks, in batch order
 	DeletedIDs                           []string       // ids removed by full_snapshot pruning
+	Reparented                           []*taskpb.Task // children re-parented to root after their synced parent was pruned
 }
 
 // UpsertExternal reconciles one source's external tasks in a single
@@ -127,6 +128,13 @@ func (s *Store) UpsertExternal(ctx context.Context, source string, batch []*task
 		}
 		res.DeletedIDs = deletedIDs
 		res.Deleted = int32(len(deletedIDs))
+		// A pruned parent's children (a local checklist under a synced task)
+		// re-parent to root rather than vanish with it.
+		reparented, err := reparentOrphans(ctx, tx, deletedIDs, nowMs)
+		if err != nil {
+			return nil, err
+		}
+		res.Reparented = reparented
 	}
 
 	for _, id := range changedIDs {
@@ -176,6 +184,39 @@ func missingLabels(existing, want []string) []string {
 		}
 	}
 	return missing
+}
+
+// reparentOrphans re-parents to root any task whose parent is among deletedIDs
+// (children never cascade-delete with a pruned synced parent). It returns their
+// new states for watch fan-out.
+func reparentOrphans(ctx context.Context, tx *sql.Tx, deletedIDs []string, nowMs int64) ([]*taskpb.Task, error) {
+	if len(deletedIDs) == 0 {
+		return nil, nil
+	}
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(deletedIDs)), ",")
+	args := make([]any, len(deletedIDs))
+	for i, id := range deletedIDs {
+		args[i] = id
+	}
+	rows, err := tx.QueryContext(ctx,
+		"SELECT id FROM tasks WHERE parent_id IN ("+ph+") ORDER BY id", args...)
+	if err != nil {
+		return nil, fmt.Errorf("find orphaned children: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var cid string
+		if err := rows.Scan(&cid); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, cid)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return reparentToRoot(ctx, tx, ids, nowMs)
 }
 
 // pruneSource deletes the source's tasks whose external_ref is not in keep,

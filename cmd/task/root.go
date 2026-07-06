@@ -1,11 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"io"
 
 	"github.com/spf13/cobra"
 
 	"github.com/serteal/taskd/gen/task/taskconnect"
+	"github.com/serteal/taskd/internal/version"
 	"github.com/serteal/taskd/pkg/client"
 )
 
@@ -31,10 +33,13 @@ func newRootCmd(out io.Writer) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "task",
 		Short:         "task manages todos in a taskd daemon",
+		Version:       version.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 	root.SetOut(out)
+	// Print "task <version>" for both --version and the version subcommand.
+	root.SetVersionTemplate("{{.Name}} {{.Version}}\n")
 	root.PersistentFlags().StringVar(&a.addr, "addr", client.Target(), "taskd address (http://host:port or unix:///path)")
 	root.PersistentFlags().BoolVar(&a.json, "json", false, "print protojson instead of human-readable output")
 
@@ -50,8 +55,21 @@ func newRootCmd(out io.Writer) *cobra.Command {
 		newWatchCmd(a),
 		newImportCmd(a),
 		newExportCmd(a),
+		newVersionCmd(a),
 	)
 	return root
+}
+
+func newVersionCmd(a *app) *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the task version",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			fmt.Fprintf(a.out, "task %s\n", version.Version)
+			return nil
+		},
+	}
 }
 
 func shortID(id string) string {

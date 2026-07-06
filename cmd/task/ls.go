@@ -31,10 +31,15 @@ func newLsCmd(a *app) *cobra.Command {
 		hasDue    bool
 		order     string
 		limit     int
+		tree      bool
 	)
 	cmd := &cobra.Command{
 		Use:   "ls [TEXT...]",
 		Short: "List tasks (active only by default)",
+		Long: `List tasks (active only by default).
+
+Unlike the web app's local-by-default views, ls shows tasks from every source
+unless --source filters them (e.g. --source "" for local tasks only).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			now := time.Now()
 			filter := &taskpb.TaskFilter{
@@ -72,6 +77,12 @@ func newLsCmd(a *app) *cobra.Command {
 				filter.HasDue = boolPtr(true)
 			}
 
+			// The archive view (ls --completed) defaults to completed-desc —
+			// matching the web archive, where completing a task moves it — unless
+			// the user asked for a specific order.
+			if completed && !cmd.Flags().Changed("order") {
+				order = "completed:desc"
+			}
 			orderBy, err := parseOrder(order)
 			if err != nil {
 				return err
@@ -86,7 +97,7 @@ func newLsCmd(a *app) *cobra.Command {
 
 			color := isTerminal(a.out)
 			w := tabwriter.NewWriter(a.out, 0, 4, 2, ' ', 0)
-			for _, t := range tasks {
+			printRow := func(t *taskpb.Task, indent string) {
 				mark := ""
 				if t.GetCompletedTime() != nil {
 					mark = "✓"
@@ -107,8 +118,15 @@ func newLsCmd(a *app) *cobra.Command {
 				if t.GetSource() != "" {
 					src = "[" + t.GetSource() + "]"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-					shortID(t.GetId()), mark, t.GetTitle(), strings.Join(tags, " "), due, src)
+				fmt.Fprintf(w, "%s\t%s\t%s%s\t%s\t%s\t%s\n",
+					shortID(t.GetId()), mark, indent, t.GetTitle(), strings.Join(tags, " "), due, src)
+			}
+			if tree {
+				printTree(tasks, printRow)
+			} else {
+				for _, t := range tasks {
+					printRow(t, "")
+				}
 			}
 			return w.Flush()
 		},
@@ -121,20 +139,45 @@ func newLsCmd(a *app) *cobra.Command {
 	cmd.Flags().StringVar(&dueAfter, "due-after", "", "only tasks due at or after WHEN")
 	cmd.Flags().BoolVar(&noDue, "no-due", false, "only tasks without a due date")
 	cmd.Flags().BoolVar(&hasDue, "has-due", false, "only tasks with a due date")
-	cmd.Flags().StringVar(&order, "order", "due:asc", "sort order: created|updated|due|title[:asc|:desc]")
+	cmd.Flags().StringVar(&order, "order", "due:asc", "sort order: created|updated|due|title|completed[:asc|:desc]")
 	cmd.Flags().IntVar(&limit, "limit", 200, "maximum tasks to list")
+	cmd.Flags().BoolVar(&tree, "tree", false, "nest subtasks under their parent")
 	cmd.MarkFlagsMutuallyExclusive("all", "completed")
 	cmd.MarkFlagsMutuallyExclusive("no-due", "has-due")
 	return cmd
+}
+
+// printTree renders tasks with subtasks indented under their parent. A task
+// whose parent is not in the listing renders flat, at the top level.
+func printTree(tasks []*taskpb.Task, printRow func(*taskpb.Task, string)) {
+	visible := make(map[string]bool, len(tasks))
+	for _, t := range tasks {
+		visible[t.GetId()] = true
+	}
+	children := make(map[string][]*taskpb.Task)
+	var roots []*taskpb.Task
+	for _, t := range tasks {
+		if pid := t.GetParentId(); pid != "" && visible[pid] {
+			children[pid] = append(children[pid], t)
+		} else {
+			roots = append(roots, t)
+		}
+	}
+	for _, r := range roots {
+		printRow(r, "")
+		for _, c := range children[r.GetId()] {
+			printRow(c, "  ")
+		}
+	}
 }
 
 // parseOrder maps the CLI's field[:dir] form to the server's "field dir".
 func parseOrder(s string) (string, error) {
 	field, dir, hasDir := strings.Cut(s, ":")
 	switch field {
-	case "created", "updated", "due", "title":
+	case "created", "updated", "due", "title", "completed":
 	default:
-		return "", fmt.Errorf("invalid order %q: want created|updated|due|title, optionally :asc or :desc", s)
+		return "", fmt.Errorf("invalid order %q: want created|updated|due|title|completed, optionally :asc or :desc", s)
 	}
 	if !hasDir {
 		return field, nil // bare field is ascending server-side

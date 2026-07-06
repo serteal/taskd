@@ -29,12 +29,12 @@ import (
 
 	"connectrpc.com/connect"
 	ics "github.com/arran4/golang-ical"
-	rrule "github.com/teambition/rrule-go"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	taskpb "github.com/serteal/taskd/gen/task"
 	"github.com/serteal/taskd/gen/task/taskconnect"
+	"github.com/serteal/taskd/internal/recur"
 )
 
 const (
@@ -142,18 +142,13 @@ func icsToTasks(cal *ics.Calendar, now time.Time) ([]*taskpb.ExternalTask, error
 }
 
 // expandICSRule returns the series' occurrence starts within the window,
-// skipping EXDATE-excluded ones.
+// skipping EXDATE-excluded ones. The RRULE expansion lives in internal/recur;
+// the max-occurrence cap and EXDATE handling are ics-specific and stay here.
 func expandICSRule(ev *ics.VEvent, rule string, start, windowStart, windowEnd time.Time) ([]time.Time, error) {
-	opt, err := rrule.StrToROption(rule)
+	occs, err := recur.Expand(rule, start, windowStart, windowEnd)
 	if err != nil {
-		return nil, fmt.Errorf("parsing RRULE: %w", err)
+		return nil, err
 	}
-	opt.Dtstart = start
-	r, err := rrule.NewRRule(*opt)
-	if err != nil {
-		return nil, fmt.Errorf("building RRULE: %w", err)
-	}
-	occs := r.Between(windowStart, windowEnd, true)
 	if len(occs) > icsMaxOccurrences {
 		occs = occs[:icsMaxOccurrences]
 	}

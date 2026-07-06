@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/internal/recur"
 )
 
 func newEditCmd(a *app) *cobra.Command {
@@ -19,6 +20,10 @@ func newEditCmd(a *app) *cobra.Command {
 		title, notes, due       string
 		clearDue                bool
 		addLabels, removeLabels []string
+		every                   string
+		clearEvery              bool
+		parent                  string
+		clearParent             bool
 	)
 	cmd := &cobra.Command{
 		Use:   "edit ID",
@@ -59,8 +64,30 @@ func newEditCmd(a *app) *cobra.Command {
 				upd.Labels = editLabels(cur.GetLabels(), addLabels, removeLabels)
 				paths = append(paths, "labels")
 			}
+			switch {
+			case clearEvery:
+				paths = append(paths, "recurrence") // masked but unset stops recurring
+			case cmd.Flags().Changed("every"):
+				rule, err := recur.FromNatural(every)
+				if err != nil {
+					return err
+				}
+				upd.Recurrence = rule
+				paths = append(paths, "recurrence")
+			}
+			switch {
+			case clearParent:
+				paths = append(paths, "parent_id") // masked but unset detaches to top-level
+			case cmd.Flags().Changed("parent"):
+				p, err := resolveTask(ctx, a.client(), parent)
+				if err != nil {
+					return err
+				}
+				upd.ParentId = p.GetId()
+				paths = append(paths, "parent_id")
+			}
 			if len(paths) == 0 {
-				return errors.New("nothing to edit: pass at least one of --title, --notes, --due, --clear-due, --add-label, --remove-label")
+				return errors.New("nothing to edit: pass at least one of --title, --notes, --due, --clear-due, --add-label, --remove-label, --every, --clear-every, --parent, --clear-parent")
 			}
 
 			res, err := a.client().UpdateTask(ctx, connect.NewRequest(&taskpb.UpdateTaskRequest{
@@ -82,11 +109,17 @@ func newEditCmd(a *app) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&title, "title", "", "new title")
 	cmd.Flags().StringVar(&notes, "notes", "", "new notes (empty clears)")
-	cmd.Flags().StringVar(&due, "due", "", "new due time (today, tomorrow, Nd, YYYY-MM-DD[ HH:MM])")
+	cmd.Flags().StringVar(&due, "due", "", `new due time (e.g. today, tomorrow, friday, 3d, 2w, "in 2 weeks", 2026-12-24, "fri 3pm")`)
 	cmd.Flags().BoolVar(&clearDue, "clear-due", false, "remove the due date")
 	cmd.Flags().StringArrayVar(&addLabels, "add-label", nil, "label to add (repeatable)")
 	cmd.Flags().StringArrayVar(&removeLabels, "remove-label", nil, "label to remove (repeatable)")
+	cmd.Flags().StringVar(&every, "every", "", `set recurrence in plain English (e.g. daily, weekday, "2 weeks")`)
+	cmd.Flags().BoolVar(&clearEvery, "clear-every", false, "stop the task recurring")
+	cmd.Flags().StringVar(&parent, "parent", "", "nest under this parent task (id or unique id prefix)")
+	cmd.Flags().BoolVar(&clearParent, "clear-parent", false, "detach from its parent (back to top-level)")
 	cmd.MarkFlagsMutuallyExclusive("due", "clear-due")
+	cmd.MarkFlagsMutuallyExclusive("every", "clear-every")
+	cmd.MarkFlagsMutuallyExclusive("parent", "clear-parent")
 	return cmd
 }
 

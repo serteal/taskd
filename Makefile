@@ -1,6 +1,10 @@
 GOBIN := $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
+# Stamped into the binaries via -ldflags.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X github.com/serteal/taskd/internal/version.Version=$(VERSION)
+
 .PHONY: generate generate-web lint test test-web test-web-e2e build build-web web extensions fmt
 
 generate: ## regenerate Go from protos (requires buf, protoc-gen-go, protoc-gen-connect-go)
@@ -24,9 +28,9 @@ test-web-e2e: ## end-to-end web tests: builds a webui taskd + extensions, spawns
 	cd web && npx playwright install chromium && npx playwright test
 
 build:
-	go build -o taskd ./cmd/taskd
-	go build -o task ./cmd/task
-	go build -o task-mcp ./cmd/task-mcp
+	go build -ldflags "$(LDFLAGS)" -o taskd ./cmd/taskd
+	go build -ldflags "$(LDFLAGS)" -o task ./cmd/task
+	go build -ldflags "$(LDFLAGS)" -o task-mcp ./cmd/task-mcp
 
 extensions: ## build the in-tree extensions (syncer binaries + web bundles)
 	go build -o extensions/ics/task-sync-ics ./extensions/ics
@@ -39,9 +43,9 @@ web: ## build the web UI bundle into internal/webui/dist
 	cd web && npm install && npm run build
 
 build-web: web ## build taskd with the web UI embedded
-	go build -tags webui -o taskd ./cmd/taskd
-	go build -o task ./cmd/task
-	go build -o task-mcp ./cmd/task-mcp
+	go build -tags webui -ldflags "$(LDFLAGS)" -o taskd ./cmd/taskd
+	go build -ldflags "$(LDFLAGS)" -o task ./cmd/task
+	go build -ldflags "$(LDFLAGS)" -o task-mcp ./cmd/task-mcp
 
 fmt:
 	gofmt -w cmd internal pkg extensions 2>/dev/null || true

@@ -29,6 +29,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/internal/recur"
 )
 
 var (
@@ -47,33 +48,6 @@ type Store struct {
 	now func() time.Time
 }
 
-var schema = []string{
-	`CREATE TABLE IF NOT EXISTS tasks (
-		id             TEXT PRIMARY KEY,
-		title          TEXT NOT NULL,
-		notes          TEXT NOT NULL DEFAULT '',
-		due_ms         INTEGER,
-		completed_ms   INTEGER,
-		source         TEXT NOT NULL DEFAULT '',
-		external_ref   TEXT NOT NULL DEFAULT '',
-		external_data  TEXT,
-		user_data      TEXT,
-		revision       INTEGER NOT NULL,
-		created_ms     INTEGER NOT NULL,
-		updated_ms     INTEGER NOT NULL
-	)`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS tasks_by_external ON tasks(source, external_ref) WHERE source <> ''`,
-	`CREATE INDEX IF NOT EXISTS tasks_by_completed_due ON tasks(completed_ms, due_ms)`,
-	`CREATE INDEX IF NOT EXISTS tasks_by_created ON tasks(created_ms, id)`,
-	`CREATE INDEX IF NOT EXISTS tasks_by_updated ON tasks(updated_ms, id)`,
-	`CREATE TABLE IF NOT EXISTS task_labels (
-		task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-		label   TEXT NOT NULL,
-		PRIMARY KEY (task_id, label)
-	) WITHOUT ROWID`,
-	`CREATE INDEX IF NOT EXISTS labels_by_label ON task_labels(label)`,
-}
-
 // Open opens (creating if necessary) the database at path. now supplies the
 // clock used for create/update timestamps; nil means time.Now.
 func Open(ctx context.Context, path string, now func() time.Time) (*Store, error) {
@@ -90,19 +64,9 @@ func Open(ctx context.Context, path string, now func() time.Time) (*Store, error
 	// It also means a query issued while a *sql.Rows is open would deadlock,
 	// so every method drains result sets before issuing the next statement.
 	db.SetMaxOpenConns(1)
-	for _, stmt := range schema {
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("apply schema: %w", err)
-		}
-	}
-	// Columns added after the initial schema; "duplicate column" just means
-	// the database is current. (Pre-freeze development convenience, not a
-	// migration framework.)
-	if _, err := db.ExecContext(ctx, "ALTER TABLE tasks ADD COLUMN user_data TEXT"); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
+	if err := migrate(ctx, db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("add user_data column: %w", err)
+		return nil, err
 	}
 	return &Store{db: db, now: now}, nil
 }
@@ -119,7 +83,7 @@ type querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-const taskColumns = "id, title, notes, due_ms, completed_ms, source, external_ref, external_data, user_data, revision, created_ms, updated_ms"
+const taskColumns = "id, title, notes, due_ms, completed_ms, source, external_ref, external_data, user_data, recurrence, parent_id, revision, created_ms, updated_ms"
 
 // taskRow mirrors one tasks row; labels live in task_labels.
 type taskRow struct {
@@ -132,6 +96,8 @@ type taskRow struct {
 	externalRef  string
 	externalData sql.NullString
 	userData     sql.NullString
+	recurrence   string
+	parentID     string
 	revision     int64
 	createdMs    int64
 	updatedMs    int64
@@ -139,7 +105,8 @@ type taskRow struct {
 
 func (r *taskRow) scan(s interface{ Scan(dest ...any) error }) error {
 	return s.Scan(&r.id, &r.title, &r.notes, &r.dueMs, &r.completedMs,
-		&r.source, &r.externalRef, &r.externalData, &r.userData, &r.revision, &r.createdMs, &r.updatedMs)
+		&r.source, &r.externalRef, &r.externalData, &r.userData,
+		&r.recurrence, &r.parentID, &r.revision, &r.createdMs, &r.updatedMs)
 }
 
 func (r *taskRow) proto(labels []string) (*taskpb.Task, error) {
@@ -162,6 +129,8 @@ func (r *taskRow) proto(labels []string) (*taskpb.Task, error) {
 		ExternalRef:   r.externalRef,
 		ExternalData:  data,
 		UserData:      userData,
+		Recurrence:    r.recurrence,
+		ParentId:      r.parentID,
 		Revision:      uint64(r.revision),
 		CreateTime:    msTS(r.createdMs),
 		UpdateTime:    msTS(r.updatedMs),
@@ -277,14 +246,19 @@ func getTask(ctx context.Context, q querier, id string) (*taskpb.Task, error) {
 }
 
 // Create inserts a local task and returns it with server-assigned id,
-// revision 1, and timestamps.
-func (s *Store) Create(ctx context.Context, title, notes string, labels []string, due *timestamppb.Timestamp) (*taskpb.Task, error) {
+// revision 1, and timestamps. recurrence (a canonical RRULE subset, or "")
+// and parentID (a top-level task's id, or "") are validated before insert.
+func (s *Store) Create(ctx context.Context, title, notes string, labels []string, due *timestamppb.Timestamp, recurrence, parentID string) (*taskpb.Task, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return nil, fmt.Errorf("title must not be empty: %w", ErrInvalid)
 	}
 	labels, err := normalizeLabels(labels)
 	if err != nil {
+		return nil, err
+	}
+	// A local task's source is always "", so recurrence is always permitted.
+	if err := validateRecurrence(recurrence, ""); err != nil {
 		return nil, err
 	}
 	id := ulid.Make().String()
@@ -296,9 +270,12 @@ func (s *Store) Create(ctx context.Context, title, notes string, labels []string
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err := validateParent(ctx, tx, id, parentID); err != nil {
+		return nil, err
+	}
 	if _, err := tx.ExecContext(ctx,
-		"INSERT INTO tasks (id, title, notes, due_ms, revision, created_ms, updated_ms) VALUES (?, ?, ?, ?, 1, ?, ?)",
-		id, title, notes, dueMs, nowMs, nowMs); err != nil {
+		"INSERT INTO tasks (id, title, notes, due_ms, recurrence, parent_id, revision, created_ms, updated_ms) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+		id, title, notes, dueMs, recurrence, parentID, nowMs, nowMs); err != nil {
 		return nil, fmt.Errorf("insert task: %w", err)
 	}
 	if err := insertLabels(ctx, tx, id, labels); err != nil {
@@ -313,10 +290,60 @@ func (s *Store) Create(ctx context.Context, title, notes string, labels []string
 		Notes:      notes,
 		Labels:     labels,
 		DueTime:    tsOf(dueMs),
+		Recurrence: recurrence,
+		ParentId:   parentID,
 		Revision:   1,
 		CreateTime: msTS(nowMs),
 		UpdateTime: msTS(nowMs),
 	}, nil
+}
+
+// validateRecurrence rejects a recurrence that is malformed or set on a synced
+// task (source != ""). An empty recurrence is always valid.
+func validateRecurrence(recurrence, source string) error {
+	if recurrence == "" {
+		return nil
+	}
+	if source != "" {
+		return fmt.Errorf("recurrence cannot be set on synced task (source %q): %w", source, ErrInvalid)
+	}
+	if _, err := recur.Parse(recurrence); err != nil {
+		return fmt.Errorf("%v: %w", err, ErrInvalid)
+	}
+	return nil
+}
+
+// validateParent enforces the one-level hierarchy for parenting taskID under
+// parentID within q: the parent must exist (ErrNotFound) and be top-level, the
+// task must not be its own parent, and the task must not already have children
+// (both depth violations are ErrInvalid). An empty parentID is always valid.
+func validateParent(ctx context.Context, q querier, taskID, parentID string) error {
+	if parentID == "" {
+		return nil
+	}
+	if parentID == taskID {
+		return fmt.Errorf("a task cannot be its own parent: %w", ErrInvalid)
+	}
+	var parentParent string
+	err := q.QueryRowContext(ctx, "SELECT parent_id FROM tasks WHERE id = ?", parentID).Scan(&parentParent)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("parent task %q: %w", parentID, ErrNotFound)
+	}
+	if err != nil {
+		return err
+	}
+	if parentParent != "" {
+		return fmt.Errorf("parent %q is itself a subtask; subtasks are one level deep: %w", parentID, ErrInvalid)
+	}
+	var one int
+	err = q.QueryRowContext(ctx, "SELECT 1 FROM tasks WHERE parent_id = ? LIMIT 1", taskID).Scan(&one)
+	if err == nil {
+		return fmt.Errorf("task %q has subtasks and cannot itself become a subtask; subtasks are one level deep: %w", taskID, ErrInvalid)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	return nil
 }
 
 // Get returns the task with the given id, or ErrNotFound.
@@ -326,112 +353,262 @@ func (s *Store) Get(ctx context.Context, id string) (*taskpb.Task, error) {
 
 // Update applies mutate to the current state of the task in a transaction and
 // persists the user-mutable fields: title, notes, labels, due_time,
-// completed_time, and user_data. Mutations of id, source, external_ref,
-// external_data, create_time, and revision are ignored. A nonzero expectedRevision that
-// differs from the stored revision fails with ErrRevisionMismatch before
-// mutate runs; errors returned by mutate propagate unwrapped.
-func (s *Store) Update(ctx context.Context, id string, expectedRevision uint64, mutate func(*taskpb.Task) error) (*taskpb.Task, error) {
+// completed_time, user_data, recurrence, and parent_id. Mutations of id,
+// source, external_ref, external_data, create_time, and revision are ignored.
+// A nonzero expectedRevision that differs from the stored revision fails with
+// ErrRevisionMismatch before mutate runs; errors returned by mutate propagate
+// unwrapped.
+//
+// Recurrence roll-forward: if mutate completes an active (incomplete)
+// recurring task — the stored task had no completed_time and mutate sets a
+// non-zero one while recurrence != "" — the task is NOT completed. Instead this
+// inserts a frozen archive copy (a new local task with the same fields,
+// completed at the requested time, no recurrence) and advances the live task's
+// due_time to the next occurrence, leaving it active. The advanced live task is
+// returned as the first result and the archive as the second (spawned); on
+// every other update — including adding recurrence to an already-completed task
+// or re-masking completed on one — the second result is nil.
+func (s *Store) Update(ctx context.Context, id string, expectedRevision uint64, mutate func(*taskpb.Task) error) (*taskpb.Task, *taskpb.Task, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer tx.Rollback()
 
 	var r taskRow
 	err = r.scan(tx.QueryRowContext(ctx, "SELECT "+taskColumns+" FROM tasks WHERE id = ?", id))
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("task %q: %w", id, ErrNotFound)
+		return nil, nil, fmt.Errorf("task %q: %w", id, ErrNotFound)
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if expectedRevision != 0 && expectedRevision != uint64(r.revision) {
-		return nil, fmt.Errorf("expected revision %d, current is %d: %w",
+		return nil, nil, fmt.Errorf("expected revision %d, current is %d: %w",
 			expectedRevision, r.revision, ErrRevisionMismatch)
 	}
 	oldLabels, err := taskLabels(ctx, tx, id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cur, err := r.proto(oldLabels)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := mutate(cur); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	title := strings.TrimSpace(cur.GetTitle())
 	if title == "" {
-		return nil, fmt.Errorf("title must not be empty: %w", ErrInvalid)
+		return nil, nil, fmt.Errorf("title must not be empty: %w", ErrInvalid)
 	}
 	labels, err := normalizeLabels(cur.GetLabels())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	dueMs := msOf(cur.GetDueTime())
-	completedMs := msOf(cur.GetCompletedTime())
+	if err := validateRecurrence(cur.GetRecurrence(), r.source); err != nil {
+		return nil, nil, err
+	}
+	if cur.GetParentId() != r.parentID {
+		if err := validateParent(ctx, tx, id, cur.GetParentId()); err != nil {
+			return nil, nil, err
+		}
+	}
 	userData, err := marshalStruct(cur.GetUserData())
+	if err != nil {
+		return nil, nil, err
+	}
+	nowT := s.now()
+	nowMs := nowT.UnixMilli()
+	newRevision := r.revision + 1
+
+	// Roll the series forward only on the incomplete->completed transition of an
+	// active (incomplete) recurring task: the stored pre-mutate row had no
+	// completed_ms (r.completedMs is NULL) and the mask just set one. Adding
+	// recurrence to an already-completed task, or re-masking completed on one,
+	// is a plain update that leaves the task completed — never a resurrection.
+	var spawnedID string
+	justCompleted := !r.completedMs.Valid && cur.GetCompletedTime() != nil
+	if cur.GetRecurrence() != "" && justCompleted {
+		spawnedID, err = s.rollForward(ctx, tx, cur, labels, r.dueMs, nowT)
+		if err != nil {
+			return nil, nil, err
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE tasks SET title = ?, notes = ?, due_ms = ?, completed_ms = ?, user_data = ?, recurrence = ?, parent_id = ?, revision = ?, updated_ms = ? WHERE id = ?",
+			title, cur.GetNotes(), msOf(cur.GetDueTime()), msOf(cur.GetCompletedTime()), userData,
+			cur.GetRecurrence(), cur.GetParentId(), newRevision, nowMs, id); err != nil {
+			return nil, nil, fmt.Errorf("update task: %w", err)
+		}
+		if err := replaceLabels(ctx, tx, id, labels); err != nil {
+			return nil, nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+
+	updated, err := getTask(ctx, s.db, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if spawnedID == "" {
+		return updated, nil, nil
+	}
+	spawned, err := getTask(ctx, s.db, spawnedID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return updated, spawned, nil
+}
+
+// rollForward performs one recurrence step inside tx: it inserts a frozen
+// archive of the occurrence just finished (completed at cur's completed_time,
+// no recurrence) and advances the live task's due_time to the next occurrence,
+// leaving it active. archiveDue is the task's PRE-mutate due — the occurrence
+// actually completed — which the archive records even when this same update
+// also changed due_time; the advance base is the post-mutate due, since an
+// explicit due change expresses where the series continues from. Recurrence
+// math runs in nowT's location so occurrences keep their local wall-clock time
+// across DST shifts (the daemon's timezone is authoritative). It returns the
+// archive's id.
+func (s *Store) rollForward(ctx context.Context, tx *sql.Tx, cur *taskpb.Task, labels []string, archiveDue sql.NullInt64, nowT time.Time) (string, error) {
+	rule, err := recur.Parse(cur.GetRecurrence())
+	if err != nil {
+		return "", fmt.Errorf("%v: %w", err, ErrInvalid)
+	}
+	// Next occurrence: strictly after the old due, then fast-forward past now so
+	// an overdue task completes once, not once per missed occurrence. With no
+	// due date the series anchors on now. The advance base is taken in the
+	// daemon's local zone so calendar math preserves the wall-clock time of day
+	// (e.g. 09:00) even when the interval crosses a DST boundary.
+	base := nowT
+	if cur.GetDueTime() != nil {
+		base = cur.GetDueTime().AsTime().In(nowT.Location())
+	}
+	next := rule.Next(base)
+	for !next.After(nowT) {
+		next = rule.Next(next)
+	}
+
+	userData, err := marshalStruct(cur.GetUserData())
+	if err != nil {
+		return "", err
+	}
+	nowMs := nowT.UnixMilli()
+
+	// (1) Frozen archive copy: new id, revision 1, no recurrence, completed. Its
+	// due is the PRE-mutate due (the occurrence that was finished), not any new
+	// due_time this same update set.
+	archiveID := ulid.Make().String()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO tasks (id, title, notes, due_ms, completed_ms, user_data, parent_id, revision, created_ms, updated_ms)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		archiveID, strings.TrimSpace(cur.GetTitle()), cur.GetNotes(), archiveDue,
+		msOf(cur.GetCompletedTime()), userData, cur.GetParentId(), nowMs, nowMs); err != nil {
+		return "", fmt.Errorf("insert occurrence archive: %w", err)
+	}
+	if err := insertLabels(ctx, tx, archiveID, labels); err != nil {
+		return "", err
+	}
+
+	// (2) Advance the live task; it stays active with the next due date.
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE tasks SET title = ?, notes = ?, due_ms = ?, completed_ms = NULL, user_data = ?, recurrence = ?, parent_id = ?, revision = revision + 1, updated_ms = ? WHERE id = ?",
+		strings.TrimSpace(cur.GetTitle()), cur.GetNotes(), msOf(timestampOf(next)), userData,
+		cur.GetRecurrence(), cur.GetParentId(), nowMs, cur.GetId()); err != nil {
+		return "", fmt.Errorf("advance recurring task: %w", err)
+	}
+	if err := replaceLabels(ctx, tx, cur.GetId(), labels); err != nil {
+		return "", err
+	}
+	return archiveID, nil
+}
+
+// timestampOf wraps a time in a proto timestamp so msOf can truncate it.
+func timestampOf(t time.Time) *timestamppb.Timestamp { return timestamppb.New(t) }
+
+// replaceLabels swaps a task's label set for the given labels.
+func replaceLabels(ctx context.Context, q querier, taskID string, labels []string) error {
+	if _, err := q.ExecContext(ctx, "DELETE FROM task_labels WHERE task_id = ?", taskID); err != nil {
+		return fmt.Errorf("delete labels: %w", err)
+	}
+	return insertLabels(ctx, q, taskID, labels)
+}
+
+// Delete permanently removes a task and (via cascade) its labels. Its children
+// are re-parented to top-level in the same transaction rather than deleted;
+// their new states are returned so the caller can fan out watch events.
+func (s *Store) Delete(ctx context.Context, id string) ([]*taskpb.Task, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	nowMs := s.now().UnixMilli()
-	newRevision := r.revision + 1
+	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx,
-		"UPDATE tasks SET title = ?, notes = ?, due_ms = ?, completed_ms = ?, user_data = ?, revision = ?, updated_ms = ? WHERE id = ?",
-		title, cur.GetNotes(), dueMs, completedMs, userData, newRevision, nowMs, id); err != nil {
-		return nil, fmt.Errorf("update task: %w", err)
+	childIDs, err := childIDsOf(ctx, tx, id)
+	if err != nil {
+		return nil, err
 	}
-	// Labels are replaced wholesale.
-	if _, err := tx.ExecContext(ctx, "DELETE FROM task_labels WHERE task_id = ?", id); err != nil {
-		return nil, fmt.Errorf("delete labels: %w", err)
+	res, err := tx.ExecContext(ctx, "DELETE FROM tasks WHERE id = ?", id)
+	if err != nil {
+		return nil, fmt.Errorf("delete task: %w", err)
 	}
-	if err := insertLabels(ctx, tx, id, labels); err != nil {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, fmt.Errorf("task %q: %w", id, ErrNotFound)
+	}
+	reparented, err := reparentToRoot(ctx, tx, childIDs, s.now().UnixMilli())
+	if err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-
-	// Rebuild from the stored row so mutations of immutable fields vanish.
-	data, err := unmarshalStruct(r.externalData)
-	if err != nil {
-		return nil, err
-	}
-	newUserData, err := unmarshalStruct(userData)
-	if err != nil {
-		return nil, err
-	}
-	return &taskpb.Task{
-		Id:            r.id,
-		Title:         title,
-		Notes:         cur.GetNotes(),
-		Labels:        labels,
-		DueTime:       tsOf(dueMs),
-		CompletedTime: tsOf(completedMs),
-		Source:        r.source,
-		ExternalRef:   r.externalRef,
-		ExternalData:  data,
-		UserData:      newUserData,
-		Revision:      uint64(newRevision),
-		CreateTime:    msTS(r.createdMs),
-		UpdateTime:    msTS(nowMs),
-	}, nil
+	return reparented, nil
 }
 
-// Delete permanently removes a task and (via cascade) its labels.
-func (s *Store) Delete(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, "DELETE FROM tasks WHERE id = ?", id)
+// childIDsOf returns the ids of tasks whose parent is parentID, drained fully
+// (the single-connection pool forbids leaving a result set open).
+func childIDsOf(ctx context.Context, q querier, parentID string) ([]string, error) {
+	rows, err := q.QueryContext(ctx, "SELECT id FROM tasks WHERE parent_id = ? ORDER BY id", parentID)
 	if err != nil {
-		return fmt.Errorf("delete task: %w", err)
+		return nil, fmt.Errorf("find children: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var cid string
+		if err := rows.Scan(&cid); err != nil {
+			return nil, err
+		}
+		ids = append(ids, cid)
 	}
-	if n == 0 {
-		return fmt.Errorf("task %q: %w", id, ErrNotFound)
+	return ids, rows.Err()
+}
+
+// reparentToRoot clears parent_id on the given tasks (bumping revision) and
+// returns their new states, for watch fan-out.
+func reparentToRoot(ctx context.Context, q querier, ids []string, nowMs int64) ([]*taskpb.Task, error) {
+	for _, cid := range ids {
+		if _, err := q.ExecContext(ctx,
+			"UPDATE tasks SET parent_id = '', revision = revision + 1, updated_ms = ? WHERE id = ?",
+			nowMs, cid); err != nil {
+			return nil, fmt.Errorf("re-parent child: %w", err)
+		}
 	}
-	return nil
+	out := make([]*taskpb.Task, 0, len(ids))
+	for _, cid := range ids {
+		t, err := getTask(ctx, q, cid)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, nil
 }

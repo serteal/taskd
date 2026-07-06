@@ -17,7 +17,24 @@ import (
 	"github.com/serteal/taskd/gen/task/taskconnect"
 	"github.com/serteal/taskd/internal/server"
 	"github.com/serteal/taskd/internal/store"
+	"github.com/serteal/taskd/internal/version"
 )
+
+// TestServerReportsBuildVersion: the MCP server advertises the taskd build
+// version (not a hardcoded string) in its initialize handshake.
+func TestServerReportsBuildVersion(t *testing.T) {
+	sess := newSession(t)
+	init := sess.InitializeResult()
+	if init == nil || init.ServerInfo == nil {
+		t.Fatal("no server info in initialize result")
+	}
+	if got := init.ServerInfo.Version; got != version.Version {
+		t.Errorf("server version = %q, want build version %q", got, version.Version)
+	}
+	if got := init.ServerInfo.Name; got != "taskd" {
+		t.Errorf("server name = %q, want taskd", got)
+	}
+}
 
 // newSession serves a real store over a real HTTP server (the pattern from
 // internal/server's tests), points a bridge at it, and connects an
@@ -175,6 +192,99 @@ func TestToolsList(t *testing.T) {
 	}
 	if !strings.Contains(got["create_task"], "agent:") {
 		t.Errorf("create_task description must tell agents to label with agent:<name>")
+	}
+
+	// The list_tasks input schema advertises the "completed" order_by that the
+	// store supports, so agents can sort by completion time.
+	for _, tl := range res.Tools {
+		if tl.Name != "list_tasks" {
+			continue
+		}
+		schema, err := json.Marshal(tl.InputSchema)
+		if err != nil {
+			t.Fatalf("marshal list_tasks input schema: %v", err)
+		}
+		if !strings.Contains(string(schema), "with due or completed") {
+			t.Errorf("list_tasks order_by schema must document the completed sort:\n%s", schema)
+		}
+	}
+}
+
+func TestRecurrenceParamsAdvertised(t *testing.T) {
+	sess := newSession(t)
+	res, err := sess.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemas := map[string]string{}
+	descs := map[string]string{}
+	for _, tl := range res.Tools {
+		b, err := json.Marshal(tl.InputSchema)
+		if err != nil {
+			t.Fatalf("marshal %s schema: %v", tl.Name, err)
+		}
+		schemas[tl.Name] = string(b)
+		descs[tl.Name] = tl.Description
+	}
+	// create_task and update_task advertise the new parameters.
+	for _, name := range []string{"create_task", "update_task"} {
+		for _, frag := range []string{"recurrence", "parent_id"} {
+			if !strings.Contains(schemas[name], frag) {
+				t.Errorf("%s input schema missing %q:\n%s", name, frag, schemas[name])
+			}
+		}
+	}
+	// complete_task teaches the roll-forward contract.
+	if !strings.Contains(descs["complete_task"], "recur") {
+		t.Errorf("complete_task description should explain recurring behavior, got %q", descs["complete_task"])
+	}
+}
+
+func TestRecurrenceRoundTrip(t *testing.T) {
+	sess := newSession(t)
+
+	// create_task accepts natural-language recurrence; a past due makes the
+	// roll-forward observable.
+	created := asTask(t, ok(t, sess, "create_task", map[string]any{
+		"title":      "standup",
+		"recurrence": "every weekday",
+		"due_time":   "2020-01-06T09:00:00Z",
+	}))
+	if created.GetRecurrence() != "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" {
+		t.Errorf("recurrence = %q, want the canonical weekday rule", created.GetRecurrence())
+	}
+
+	// complete_task rolls it forward: still active, due advanced to the future.
+	done := asTask(t, ok(t, sess, "complete_task", map[string]any{"id": created.GetId()}))
+	if done.GetCompletedTime() != nil {
+		t.Errorf("recurring task completed instead of rolling forward: %v", done.GetCompletedTime())
+	}
+	if !done.GetDueTime().AsTime().After(time.Now()) {
+		t.Errorf("due not advanced to the future: %v", done.GetDueTime().AsTime())
+	}
+	// A completed archive now exists.
+	if got := asTasks(t, ok(t, sess, "list_tasks", map[string]any{"completed": true})); len(got) != 1 {
+		t.Errorf("completed archives = %v, want exactly 1", titles(got))
+	}
+
+	// A canonical RRULE is accepted too (FromNatural falls back to Parse).
+	rr := asTask(t, ok(t, sess, "create_task", map[string]any{
+		"title": "biweekly", "recurrence": "FREQ=WEEKLY;INTERVAL=2",
+	}))
+	if rr.GetRecurrence() != "FREQ=WEEKLY;INTERVAL=2" {
+		t.Errorf("canonical recurrence = %q", rr.GetRecurrence())
+	}
+
+	// parent_id nests a subtask.
+	parent := asTask(t, ok(t, sess, "create_task", map[string]any{"title": "project"}))
+	child := asTask(t, ok(t, sess, "create_task", map[string]any{"title": "child", "parent_id": parent.GetId()}))
+	if child.GetParentId() != parent.GetId() {
+		t.Errorf("child parent_id = %q, want %q", child.GetParentId(), parent.GetId())
+	}
+
+	// An unparseable recurrence is a clean tool error.
+	if bad := call(t, sess, "create_task", map[string]any{"title": "x", "recurrence": "every blue moon"}); !bad.IsError {
+		t.Error("expected a tool error for an unparseable recurrence")
 	}
 }
 

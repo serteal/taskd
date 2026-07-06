@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"connectrpc.com/connect"
 
 	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/internal/version"
 	"github.com/serteal/taskd/pkg/client"
 )
 
@@ -21,6 +23,7 @@ import (
 // listeners, and an extension whose syncer is a shell script that talks
 // back through the public JSON API — and drives it from outside only.
 func TestDaemonEndToEnd(t *testing.T) {
+	stubOpenURL(t)
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "taskd.sock")
 	addr := freeAddr(t)
@@ -116,6 +119,39 @@ exec sleep 300
 	}
 	if res, err := http.Get("http://" + addr + "/ext/mock/sync.sh"); err != nil || res.StatusCode != http.StatusNotFound {
 		t.Errorf("extension non-web files must not be served (got %v %v)", res.StatusCode, err)
+	}
+}
+
+// TestVersionEndpoint boots the daemon and checks GET /version reports the
+// build's name and version as JSON.
+func TestVersionEndpoint(t *testing.T) {
+	stubOpenURL(t)
+	dir := t.TempDir()
+	addr := freeAddr(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, Options{Dir: dir, Listen: addr}) }()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Errorf("daemon did not shut down")
+		}
+	}()
+
+	waitHealthy(t, "http://"+addr+"/healthz")
+
+	var got struct{ Name, Version string }
+	if err := json.Unmarshal([]byte(httpGet(t, "http://"+addr+"/version")), &got); err != nil {
+		t.Fatalf("GET /version: %v", err)
+	}
+	if got.Name != "taskd" {
+		t.Errorf("name = %q, want taskd", got.Name)
+	}
+	if got.Version != version.Version {
+		t.Errorf("version = %q, want %q", got.Version, version.Version)
 	}
 }
 

@@ -6,6 +6,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -22,6 +23,7 @@ import (
 	"github.com/serteal/taskd/internal/extension"
 	"github.com/serteal/taskd/internal/server"
 	"github.com/serteal/taskd/internal/store"
+	"github.com/serteal/taskd/internal/version"
 	"github.com/serteal/taskd/internal/webui"
 )
 
@@ -30,6 +32,10 @@ type Options struct {
 	Dir string
 	// Listen overrides the config file's TCP address when non-empty.
 	Listen string
+	// Open forces opening the web app in a browser on startup; NoOpen
+	// suppresses the first-run auto-open. Flags override the config's open:.
+	Open   bool
+	NoOpen bool
 }
 
 // Run serves until ctx is canceled, then shuts down gracefully.
@@ -51,6 +57,9 @@ func Run(ctx context.Context, opts Options) error {
 	if opts.Listen != "" {
 		cfg.Listen = opts.Listen
 	}
+
+	// Detect a first run before opening the store, since Open creates the file.
+	first := firstRun(dir)
 
 	st, err := store.Open(ctx, filepath.Join(dir, "tasks.db"), nil)
 	if err != nil {
@@ -81,6 +90,11 @@ func Run(ctx context.Context, opts Options) error {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
+	// Build identity, also transport-level (separate from the frozen proto API).
+	mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"name": "taskd", "version": version.Version})
+	})
 	// Extension web bundles + index, for the frontend's loader.
 	mux.Handle("/ext/", host.Handler())
 	// The web UI (or a pointer to how to build it); longer API patterns win.
@@ -94,7 +108,23 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("listen %s: %w", cfg.Listen, err)
 	}
 	go func() { serveErr <- httpSrv.Serve(tcpLn) }()
-	log.Printf("taskd: listening on http://%s (data: %s)", cfg.Listen, dir)
+	webURL := "http://" + cfg.Listen
+	log.Printf("taskd: listening on %s (data: %s)", webURL, dir)
+
+	// Open the web app when this run asks for it, best-effort: a browser that
+	// fails to launch only logs. Skipped without a TCP address (nothing to
+	// point a browser at over a unix socket). TASKD_NO_OPEN suppresses even an
+	// explicit -open: harnesses that spawn many first-run daemons (the web e2e
+	// suite starts one per test) must never open browser windows.
+	if cfg.Listen != "" && os.Getenv("TASKD_NO_OPEN") == "" && wantOpen(first, opts.Open, opts.NoOpen, cfg.Open) {
+		log.Printf("taskd: opening web app at %s", webURL)
+		opener := openURL
+		go func() {
+			if err := opener(webURL); err != nil {
+				log.Printf("taskd: could not open browser: %v", err)
+			}
+		}()
+	}
 
 	if cfg.Socket != "" {
 		_ = os.Remove(cfg.Socket) // stale socket from an unclean exit

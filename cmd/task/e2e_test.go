@@ -227,6 +227,74 @@ func TestE2ELsFilters(t *testing.T) {
 	}
 }
 
+// TestE2EOrderCompleted: --order completed is accepted and sorts by completion
+// time, with never-completed tasks last regardless of direction.
+func TestE2EOrderCompleted(t *testing.T) {
+	addr, tc := startServer(t)
+	ctx := context.Background()
+
+	runCLI(t, addr, "", "add", "first")
+	runCLI(t, addr, "", "add", "second")
+	// The two ids can share an 8-char prefix (same millisecond), so complete
+	// "second" by its full, unambiguous id.
+	list, err := tc.ListTasks(ctx, connect.NewRequest(&taskpb.ListTasksRequest{
+		Filter: &taskpb.TaskFilter{Text: "second"},
+	}))
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(list.Msg.GetTasks()) != 1 {
+		t.Fatalf("want exactly one task titled second, got %d", len(list.Msg.GetTasks()))
+	}
+	runCLI(t, addr, "", "done", list.Msg.GetTasks()[0].GetId())
+
+	// completed:desc → the completed task before the never-completed one.
+	ls := runCLI(t, addr, "", "ls", "--all", "--order", "completed:desc")
+	mustContain(t, ls, "first", "second")
+	if strings.Index(ls, "second") > strings.Index(ls, "first") {
+		t.Errorf("completed:desc should list the completed task first:\n%s", ls)
+	}
+}
+
+// TestE2ELsCompletedDefaultsToCompletedDesc: `task ls --completed` with no
+// explicit --order defaults to completed-desc (newest completion first),
+// matching the web archive, rather than the active list's due-asc default.
+func TestE2ELsCompletedDefaultsToCompletedDesc(t *testing.T) {
+	addr, tc := startServer(t)
+	ctx := context.Background()
+
+	runCLI(t, addr, "", "add", "early")
+	runCLI(t, addr, "", "add", "late")
+
+	completeByTitle := func(title string) {
+		list, err := tc.ListTasks(ctx, connect.NewRequest(&taskpb.ListTasksRequest{
+			Filter: &taskpb.TaskFilter{Text: title},
+		}))
+		if err != nil {
+			t.Fatalf("ListTasks %s: %v", title, err)
+		}
+		if len(list.Msg.GetTasks()) != 1 {
+			t.Fatalf("want one task titled %q, got %d", title, len(list.Msg.GetTasks()))
+		}
+		runCLI(t, addr, "", "done", list.Msg.GetTasks()[0].GetId())
+	}
+	// Complete "early" first, then "late", so "late" has the newer completion.
+	completeByTitle("early")
+	completeByTitle("late")
+
+	ls := runCLI(t, addr, "", "ls", "--completed")
+	mustContain(t, ls, "early", "late")
+	if strings.Index(ls, "late") > strings.Index(ls, "early") {
+		t.Errorf("ls --completed should default to completed-desc (late first):\n%s", ls)
+	}
+
+	// An explicit --order still wins over the archive default.
+	byTitle := runCLI(t, addr, "", "ls", "--completed", "--order", "title:asc")
+	if strings.Index(byTitle, "early") > strings.Index(byTitle, "late") {
+		t.Errorf("explicit --order title:asc should list early first:\n%s", byTitle)
+	}
+}
+
 func TestE2EResolvePrefixes(t *testing.T) {
 	addr, tc := startServer(t)
 	ctx := context.Background()
@@ -377,6 +445,79 @@ func TestE2EImportExport(t *testing.T) {
 	if string(b) != exported {
 		t.Errorf("file export differs from stdout export:\n%q\nvs\n%q", b, exported)
 	}
+}
+
+func TestE2ERecurrenceAndSubtasks(t *testing.T) {
+	addr, tc := startServer(t)
+	ctx := context.Background()
+
+	// fullID resolves a title to its full, unambiguous id (roll-forward archives
+	// share an 8-char ULID prefix with the live task).
+	fullID := func(title string, completed *bool) string {
+		t.Helper()
+		res, err := tc.ListTasks(ctx, connect.NewRequest(&taskpb.ListTasksRequest{
+			Filter: &taskpb.TaskFilter{Text: title, Completed: completed},
+		}))
+		if err != nil || len(res.Msg.GetTasks()) != 1 {
+			t.Fatalf("fullID(%q): %v tasks, err=%v", title, len(res.Msg.GetTasks()), err)
+		}
+		return res.Msg.GetTasks()[0].GetId()
+	}
+
+	// add --every: a recurring task, due in the past so `done` rolls it forward.
+	runCLI(t, addr, "", "add", "standup", "--every", "weekday", "--due", "2020-01-06")
+	id := fullID("standup", boolPtr(false))
+
+	// show renders both the canonical rule and a humanized form.
+	mustContain(t, runCLI(t, addr, "", "show", id),
+		"recurrence:", "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", "every weekday")
+
+	// done on a recurring task surfaces the roll-forward.
+	mustContain(t, runCLI(t, addr, "", "done", id), "standup", "occurrence archived", "next due")
+
+	// The task remains active (rolled forward), and a completed archive exists.
+	mustContain(t, runCLI(t, addr, "", "ls"), "standup")
+	mustContain(t, runCLI(t, addr, "", "ls", "--completed"), "standup", "✓")
+
+	// edit --clear-every stops the recurrence.
+	runCLI(t, addr, "", "edit", id, "--clear-every")
+	mustNotContain(t, runCLI(t, addr, "", "show", id), "recurrence:")
+
+	// add --parent + ls --tree: subtasks nest under their parent.
+	res, err := tc.CreateTask(ctx, connect.NewRequest(&taskpb.CreateTaskRequest{Title: "project"}))
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	parentID := res.Msg.GetTask().GetId()
+	runCLI(t, addr, "", "add", "subtask one", "--parent", parentID)
+	runCLI(t, addr, "", "add", "subtask two", "--parent", parentID)
+
+	// show on the parent lists its children.
+	mustContain(t, runCLI(t, addr, "", "show", parentID), "subtasks:", "subtask one", "subtask two")
+
+	tree := runCLI(t, addr, "", "ls", "--tree")
+	flat := runCLI(t, addr, "", "ls")
+	mustContain(t, tree, "project", "subtask one", "subtask two")
+	// The parent renders before its children, and the children are indented
+	// relative to the flat listing.
+	if strings.Index(tree, "project") > strings.Index(tree, "subtask one") {
+		t.Errorf("--tree should render the parent before its child:\n%s", tree)
+	}
+	if titleCol(tree, "subtask one") <= titleCol(flat, "subtask one") {
+		t.Errorf("--tree should indent children (tree col %d, flat col %d):\n%s",
+			titleCol(tree, "subtask one"), titleCol(flat, "subtask one"), tree)
+	}
+}
+
+// titleCol returns the column at which marker appears on its line — larger under
+// indentation.
+func titleCol(out, marker string) int {
+	for _, line := range strings.Split(out, "\n") {
+		if i := strings.Index(line, marker); i >= 0 {
+			return i
+		}
+	}
+	return -1
 }
 
 // syncBuffer lets the watch goroutine and the test share an output buffer.

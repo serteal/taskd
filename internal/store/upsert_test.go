@@ -128,7 +128,7 @@ func TestUpsertPreservesUserFields(t *testing.T) {
 	id := res.Changed[0].GetId()
 
 	// The user annotates the synced task.
-	if _, err := s.Update(ctx, id, 0, func(tk *taskpb.Task) error {
+	if _, _, err := s.Update(ctx, id, 0, func(tk *taskpb.Task) error {
 		tk.Notes = "my notes"
 		tk.Labels = append(tk.Labels, "mine")
 		return nil

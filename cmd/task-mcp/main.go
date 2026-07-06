@@ -16,13 +16,20 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/serteal/taskd/gen/task/taskconnect"
+	"github.com/serteal/taskd/internal/version"
 	"github.com/serteal/taskd/pkg/client"
 )
 
 func main() {
 	addr := flag.String("addr", client.Target(),
 		"taskd address: http://host:port or unix:///path/to/taskd.sock (default honors TASKD_ADDR)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("task-mcp %s\n", version.Version)
+		return
+	}
 
 	b := &bridge{tc: client.New(*addr)}
 	if err := b.server().Run(context.Background(), &mcp.StdioTransport{}); err != nil {
@@ -39,7 +46,7 @@ type bridge struct {
 
 // server builds the MCP server and registers every tool.
 func (b *bridge) server() *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "taskd", Version: "0.1.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "taskd", Version: version.Version}, nil)
 	b.registerTools(s)
 	return s
 }

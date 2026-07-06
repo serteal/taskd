@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/internal/recur"
 )
 
 func newAddCmd(a *app) *cobra.Command {
@@ -17,6 +18,8 @@ func newAddCmd(a *app) *cobra.Command {
 		labels []string
 		notes  string
 		due    string
+		every  string
+		parent string
 	)
 	cmd := &cobra.Command{
 		Use:   "add TITLE...",
@@ -35,6 +38,20 @@ func newAddCmd(a *app) *cobra.Command {
 				}
 				req.DueTime = timestamppb.New(t)
 			}
+			if every != "" {
+				rule, err := recur.FromNatural(every)
+				if err != nil {
+					return err
+				}
+				req.Recurrence = rule
+			}
+			if parent != "" {
+				p, err := resolveTask(cmd.Context(), a.client(), parent)
+				if err != nil {
+					return err
+				}
+				req.ParentId = p.GetId()
+			}
 			res, err := a.client().CreateTask(cmd.Context(), connect.NewRequest(req))
 			if err != nil {
 				return err
@@ -46,6 +63,8 @@ func newAddCmd(a *app) *cobra.Command {
 	}
 	cmd.Flags().StringArrayVarP(&labels, "label", "l", nil, "label to attach (repeatable)")
 	cmd.Flags().StringVar(&notes, "notes", "", "free-form notes")
-	cmd.Flags().StringVar(&due, "due", "", "due time (today, tomorrow, Nd, YYYY-MM-DD[ HH:MM])")
+	cmd.Flags().StringVar(&due, "due", "", `due time (e.g. today, tomorrow, friday, 3d, 2w, "in 2 weeks", 2026-12-24, "fri 3pm")`)
+	cmd.Flags().StringVar(&every, "every", "", `recurrence in plain English (e.g. daily, weekday, "2 weeks", "mon,wed,fri")`)
+	cmd.Flags().StringVar(&parent, "parent", "", "parent task (id or unique id prefix) to nest this task under")
 	return cmd
 }

@@ -84,6 +84,19 @@ func parseOrderBy(orderBy string) (*orderSpec, error) {
 			}},
 			{expr: "COALESCE(due_ms, 0)", desc: desc, value: func(r *taskRow) any { return r.dueMs.Int64 }},
 		}
+	case "completed":
+		// Same null-last convention as "due". The web archive uses this so
+		// completing a task (not later editing it) is what moves it in the
+		// list — "updated" was bumped by any field edit, not just completion.
+		keys = []sortKey{
+			{expr: "(completed_ms IS NULL)", value: func(r *taskRow) any {
+				if r.completedMs.Valid {
+					return int64(0)
+				}
+				return int64(1)
+			}},
+			{expr: "COALESCE(completed_ms, 0)", desc: desc, value: func(r *taskRow) any { return r.completedMs.Int64 }},
+		}
 	default:
 		return nil, fmt.Errorf("order_by field %q: %w", field, ErrInvalid)
 	}

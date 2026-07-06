@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
@@ -55,6 +56,14 @@ func setCompleted(ctx context.Context, a *app, refs []string, done bool) error {
 			return err
 		}
 		got := res.Msg.GetTask()
+		// Completing a recurring task rolls the series forward instead of
+		// closing it: an archive copy is spawned and the live task advances.
+		if spawned := res.Msg.GetSpawnedOccurrence(); done && spawned != nil {
+			next, _ := humanDue(got.GetDueTime().AsTime().Local(), time.Now())
+			fmt.Fprintf(a.out, "done %s %s (occurrence archived; next due %s)\n",
+				shortID(got.GetId()), got.GetTitle(), next)
+			continue
+		}
 		mark := "reopened"
 		if done {
 			mark = "done"

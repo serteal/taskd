@@ -22,6 +22,7 @@ import (
 // hot-enables it (no restart) — the syncer starts importing and the bundle
 // starts serving — and the change is persisted back to config.yaml.
 func TestDaemonDisabledExtension(t *testing.T) {
+	stubOpenURL(t)
 	dir := t.TempDir()
 	addr := freeAddr(t)
 

@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	taskpb "github.com/serteal/taskd/gen/task"
+	"github.com/serteal/taskd/internal/recur"
 )
 
 // defaultListLimit is how many tasks list_tasks returns when the caller does
@@ -58,18 +59,26 @@ const createTaskDesc = `Create a local task. Only title is required. Classify wi
 
 When you create a task for yourself as an agent (a reminder, a follow-up), add the label "agent:<agent-name>" (e.g. "agent:claude") so humans can find and filter agent-created tasks.
 
+recurrence makes the task repeat. Give it as natural language ("every day", "every weekday", "every 2 weeks", "mon,wed,fri") or a canonical RRULE subset (FREQ=DAILY|WEEKLY|MONTHLY|YEARLY, optional INTERVAL=n, optional BYDAY=MO..SU for weekly). Completing a recurring task does NOT close it: it archives a completed copy and advances the live task's due_time to the next occurrence (see complete_task).
+
+parent_id nests this task under an existing parent task, forming a checklist. Hierarchy is one level deep: the parent must itself be top-level, and a task that already has children cannot be given a parent.
+
 This creates local tasks only (source = ""); synced tasks arrive via their source integration, which owns their title/due/completed — on those, labels and notes are the fields to annotate. Returns the created task as JSON, including its server-assigned id and revision.`
 
 const updateTaskDesc = `Update a task, changing ONLY the fields you provide — a field mask is built from the present keys, so absent fields are untouched.
 
 - labels REPLACES the entire label set. To add or remove a single label, call get_task first and send back the full modified set.
 - due_time sets the due date (RFC3339). clear_due removes it. Provide at most one of the two.
+- recurrence sets or changes the repeat rule (natural language like "every weekday" or a canonical RRULE subset); an empty string stops the task recurring. Only allowed on local tasks.
+- parent_id nests the task under a parent (one level deep: the parent must be top-level, and a task with children of its own cannot be given a parent); an empty string detaches it back to top-level.
 - expected_revision: pass the revision from a previous read to make the update fail instead of silently overwriting if the task changed in between; on that conflict, re-read with get_task and retry.
 - On synced tasks (source != "") title and due_time are owned by the source system and will be overwritten on the next sync; labels and notes are safe to edit.
 
 Returns the updated task as JSON.`
 
-const completeTaskDesc = `Mark a task done: sets completed_time to now. This is the normal way to finish with a task — prefer it over delete_task. Returns the updated task as JSON.`
+const completeTaskDesc = `Mark a task done: sets completed_time to now. This is the normal way to finish with a task — prefer it over delete_task.
+
+If the task recurs (recurrence set), it is NOT closed: the server archives a completed copy and rolls the live task forward to its next due date, so the returned task is the still-active series with an advanced due_time (an overdue recurring task advances just once, to the next future occurrence). Returns the updated task as JSON.`
 
 const reopenTaskDesc = `Reopen a completed task: clears completed_time, making it active again. Returns the updated task as JSON.`
 
@@ -91,7 +100,7 @@ type listTasksInput struct {
 	HasDue    *bool    `json:"has_due,omitempty" jsonschema:"true for only tasks with a due date; false for only tasks without one; omit for both"`
 	Source    *string  `json:"source,omitempty" jsonschema:"exact source match, e.g. github or ics:work; the empty string matches only local (non-synced) tasks; omit for any source"`
 	Text      string   `json:"text,omitempty" jsonschema:"case-insensitive substring match over title and notes"`
-	OrderBy   string   `json:"order_by,omitempty" jsonschema:"one of created, updated, due, title, optionally followed by asc or desc (e.g. due asc); default created desc; with due, undated tasks sort last"`
+	OrderBy   string   `json:"order_by,omitempty" jsonschema:"one of created, updated, due, title, completed, optionally followed by asc or desc (e.g. due asc); default created desc; with due or completed, tasks lacking that timestamp sort last"`
 	Limit     int      `json:"limit,omitempty" jsonschema:"maximum tasks to return; default 100"`
 }
 
@@ -100,10 +109,12 @@ type getTaskInput struct {
 }
 
 type createTaskInput struct {
-	Title   string   `json:"title" jsonschema:"the task title (required)"`
-	Notes   string   `json:"notes,omitempty" jsonschema:"free-form notes"`
-	Labels  []string `json:"labels,omitempty" jsonschema:"labels to attach, e.g. p1, project:home, agent:claude"`
-	DueTime string   `json:"due_time,omitempty" jsonschema:"due date as an RFC3339 timestamp, e.g. 2026-07-10T17:00:00Z"`
+	Title      string   `json:"title" jsonschema:"the task title (required)"`
+	Notes      string   `json:"notes,omitempty" jsonschema:"free-form notes"`
+	Labels     []string `json:"labels,omitempty" jsonschema:"labels to attach, e.g. p1, project:home, agent:claude"`
+	DueTime    string   `json:"due_time,omitempty" jsonschema:"due date as an RFC3339 timestamp, e.g. 2026-07-10T17:00:00Z"`
+	Recurrence string   `json:"recurrence,omitempty" jsonschema:"repeat rule as natural language (every day, every weekday, every 2 weeks, mon,wed,fri) or a canonical RRULE subset; completing a recurring task rolls it forward instead of closing it"`
+	ParentID   string   `json:"parent_id,omitempty" jsonschema:"id of an existing top-level task to nest this one under; hierarchy is one level deep"`
 }
 
 type updateTaskInput struct {
@@ -113,6 +124,8 @@ type updateTaskInput struct {
 	Labels           *[]string `json:"labels,omitempty" jsonschema:"replacement for the ENTIRE label set; get_task first to add or remove one label"`
 	DueTime          string    `json:"due_time,omitempty" jsonschema:"new due date (RFC3339); mutually exclusive with clear_due"`
 	ClearDue         bool      `json:"clear_due,omitempty" jsonschema:"remove the due date"`
+	Recurrence       *string   `json:"recurrence,omitempty" jsonschema:"new repeat rule (natural language or canonical RRULE subset); an empty string stops the task recurring; local tasks only"`
+	ParentID         *string   `json:"parent_id,omitempty" jsonschema:"id of a top-level parent to nest under (one level deep); an empty string detaches to top-level"`
 	ExpectedRevision int       `json:"expected_revision,omitempty" jsonschema:"revision from a previous read; the update fails instead of overwriting if the task has changed since"`
 }
 
@@ -194,9 +207,10 @@ func (b *bridge) getTask(ctx context.Context, _ *mcp.CallToolRequest, in getTask
 
 func (b *bridge) createTask(ctx context.Context, _ *mcp.CallToolRequest, in createTaskInput) (*mcp.CallToolResult, any, error) {
 	req := &taskpb.CreateTaskRequest{
-		Title:  in.Title,
-		Notes:  in.Notes,
-		Labels: in.Labels,
+		Title:    in.Title,
+		Notes:    in.Notes,
+		Labels:   in.Labels,
+		ParentId: in.ParentID,
 	}
 	if in.DueTime != "" {
 		ts, err := parseRFC3339("due_time", in.DueTime)
@@ -204,6 +218,13 @@ func (b *bridge) createTask(ctx context.Context, _ *mcp.CallToolRequest, in crea
 			return nil, nil, err
 		}
 		req.DueTime = ts
+	}
+	if in.Recurrence != "" {
+		rule, err := normalizeRecurrence(in.Recurrence)
+		if err != nil {
+			return nil, nil, err
+		}
+		req.Recurrence = rule
 	}
 	res, err := b.tc.CreateTask(ctx, connect.NewRequest(req))
 	if err != nil {
@@ -241,8 +262,22 @@ func (b *bridge) updateTask(ctx context.Context, _ *mcp.CallToolRequest, in upda
 		task.DueTime = ts
 		paths = append(paths, "due_time")
 	}
+	if in.Recurrence != nil {
+		if *in.Recurrence != "" {
+			rule, err := normalizeRecurrence(*in.Recurrence)
+			if err != nil {
+				return nil, nil, err
+			}
+			task.Recurrence = rule
+		}
+		paths = append(paths, "recurrence") // masked but empty stops recurring
+	}
+	if in.ParentID != nil {
+		task.ParentId = *in.ParentID
+		paths = append(paths, "parent_id") // masked but empty detaches to top-level
+	}
 	if len(paths) == 0 {
-		return nil, nil, errors.New("nothing to update: provide at least one of title, notes, labels, due_time, or clear_due")
+		return nil, nil, errors.New("nothing to update: provide at least one of title, notes, labels, due_time, clear_due, recurrence, or parent_id")
 	}
 	if in.ExpectedRevision < 0 {
 		return nil, nil, fmt.Errorf("expected_revision must not be negative, got %d", in.ExpectedRevision)
@@ -318,6 +353,19 @@ func (b *bridge) listLabels(ctx context.Context, _ *mcp.CallToolRequest, in list
 }
 
 // --- helpers ----------------------------------------------------------------
+
+// normalizeRecurrence accepts either natural language ("every weekday") or an
+// already-canonical RRULE subset ("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR") and
+// returns the canonical form the server stores.
+func normalizeRecurrence(s string) (string, error) {
+	if rule, err := recur.FromNatural(s); err == nil {
+		return rule, nil
+	}
+	if _, err := recur.Parse(s); err != nil {
+		return "", fmt.Errorf("recurrence %q: not natural language or a supported RRULE subset (%v)", s, err)
+	}
+	return s, nil
+}
 
 // parseRFC3339 parses a timestamp input. This frontend deliberately accepts
 // only RFC3339 — agents pass structured data, and one unambiguous format

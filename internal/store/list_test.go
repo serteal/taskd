@@ -76,7 +76,7 @@ func TestListFilterCompleted(t *testing.T) {
 	ctx := context.Background()
 	mustCreate(t, s, "active")
 	done := mustCreate(t, s, "done")
-	if _, err := s.Update(ctx, done.GetId(), 0, func(tk *taskpb.Task) error {
+	if _, _, err := s.Update(ctx, done.GetId(), 0, func(tk *taskpb.Task) error {
 		tk.CompletedTime = msTs(1000)
 		return nil
 	}); err != nil {
@@ -95,7 +95,7 @@ func TestListFilterDueBounds(t *testing.T) {
 		title string
 		dueMs int64
 	}{{"t1", 1000}, {"t2", 2000}, {"t3", 3000}} {
-		if _, err := s.Create(ctx, tc.title, "", nil, msTs(tc.dueMs)); err != nil {
+		if _, err := s.Create(ctx, tc.title, "", nil, msTs(tc.dueMs), "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -123,7 +123,7 @@ func TestListFilterDueBounds(t *testing.T) {
 
 func TestListFilterHasDue(t *testing.T) {
 	s, _ := newTestStore(t)
-	if _, err := s.Create(context.Background(), "with", "", nil, msTs(1000)); err != nil {
+	if _, err := s.Create(context.Background(), "with", "", nil, msTs(1000), "", ""); err != nil {
 		t.Fatal(err)
 	}
 	mustCreate(t, s, "without")
@@ -152,19 +152,19 @@ func TestListFilterSource(t *testing.T) {
 func TestListFilterText(t *testing.T) {
 	s, _ := newTestStore(t)
 	ctx := context.Background()
-	if _, err := s.Create(ctx, "Ship the 100% release", "", nil, nil); err != nil {
+	if _, err := s.Create(ctx, "Ship the 100% release", "", nil, nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Create(ctx, "Ship the 1000 release", "", nil, nil); err != nil {
+	if _, err := s.Create(ctx, "Ship the 1000 release", "", nil, nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Create(ctx, "unrelated", "NOTES mention ShIp", nil, nil); err != nil {
+	if _, err := s.Create(ctx, "unrelated", "NOTES mention ShIp", nil, nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Create(ctx, "a_b underscore", "", nil, nil); err != nil {
+	if _, err := s.Create(ctx, "a_b underscore", "", nil, nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Create(ctx, "aXb not underscore", "", nil, nil); err != nil {
+	if _, err := s.Create(ctx, "aXb not underscore", "", nil, nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -192,16 +192,16 @@ func TestListOrdering(t *testing.T) {
 	ctx := context.Background()
 	// Created in this order (clock steps 1s per write): banana, apple, cherry.
 	// Dues: banana 2000, apple none, cherry 1000.
-	if _, err := s.Create(ctx, "banana", "", nil, msTs(2000)); err != nil {
+	if _, err := s.Create(ctx, "banana", "", nil, msTs(2000), "", ""); err != nil {
 		t.Fatal(err)
 	}
 	mustCreate(t, s, "apple")
-	if _, err := s.Create(ctx, "cherry", "", nil, msTs(1000)); err != nil {
+	if _, err := s.Create(ctx, "cherry", "", nil, msTs(1000), "", ""); err != nil {
 		t.Fatal(err)
 	}
 	// Touch banana so updated order differs from created order.
 	banana := mustList(t, s, Page{Filter: &taskpb.TaskFilter{Text: "banana"}})[0]
-	if _, err := s.Update(ctx, banana.GetId(), 0, func(tk *taskpb.Task) error { return nil }); err != nil {
+	if _, _, err := s.Update(ctx, banana.GetId(), 0, func(tk *taskpb.Task) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -221,6 +221,40 @@ func TestListOrdering(t *testing.T) {
 		{"due", []string{"cherry", "banana", "apple"}},
 		{"due asc", []string{"cherry", "banana", "apple"}},
 		{"due desc", []string{"banana", "cherry", "apple"}},
+	}
+	for _, tc := range tests {
+		if got := titlesOf(mustList(t, s, Page{OrderBy: tc.orderBy})); !slices.Equal(got, tc.want) {
+			t.Errorf("order_by %q: titles = %v, want %v", tc.orderBy, got, tc.want)
+		}
+	}
+}
+
+func TestListOrderCompleted(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	mustCreate(t, s, "apple") // never completed — sorts last regardless of direction
+	banana := mustCreate(t, s, "banana")
+	cherry := mustCreate(t, s, "cherry")
+	if _, _, err := s.Update(ctx, banana.GetId(), 0, func(tk *taskpb.Task) error {
+		tk.CompletedTime = msTs(2000)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Update(ctx, cherry.GetId(), 0, func(tk *taskpb.Task) error {
+		tk.CompletedTime = msTs(1000)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		orderBy string
+		want    []string
+	}{
+		{"completed", []string{"cherry", "banana", "apple"}}, // no direction word: defaults asc, like "due"/"title"
+		{"completed asc", []string{"cherry", "banana", "apple"}},
+		{"completed desc", []string{"banana", "cherry", "apple"}},
 	}
 	for _, tc := range tests {
 		if got := titlesOf(mustList(t, s, Page{OrderBy: tc.orderBy})); !slices.Equal(got, tc.want) {
@@ -324,12 +358,12 @@ func TestListPagination(t *testing.T) {
 			due = msTs(int64(1000 * (i % 4)))
 		}
 		title := string(rune('a' + i%4)) // duplicate titles too
-		if _, err := s.Create(ctx, title, "", nil, due); err != nil {
+		if _, err := s.Create(ctx, title, "", nil, due, "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	for _, orderBy := range []string{"", "created asc", "due asc", "due desc", "title desc", "updated"} {
+	for _, orderBy := range []string{"", "created asc", "due asc", "due desc", "title desc", "updated", "completed"} {
 		t.Run("order="+orderBy, func(t *testing.T) {
 			walkPages(t, s, Page{OrderBy: orderBy, PageSize: 3}, 4)
 		})
@@ -388,7 +422,7 @@ func TestListLabels(t *testing.T) {
 	ctx := context.Background()
 	mustCreate(t, s, "active", "a", "b")
 	done := mustCreate(t, s, "done", "b", "c")
-	if _, err := s.Update(ctx, done.GetId(), 0, func(tk *taskpb.Task) error {
+	if _, _, err := s.Update(ctx, done.GetId(), 0, func(tk *taskpb.Task) error {
 		tk.CompletedTime = msTs(1000)
 		return nil
 	}); err != nil {
