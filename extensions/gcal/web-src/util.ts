@@ -27,7 +27,6 @@ export const MIN_PX_PER_MIN = 0.5; // 30 px/hour (zoomed out)
 export const MAX_PX_PER_MIN = 2.4; // 144 px/hour (zoomed in)
 export const ZOOM_FACTOR = 1.25; // multiplier per zoom step
 export const ZOOM_KEY = "taskd-gcal-zoom"; // localStorage namespace
-export const VIEW_KEY = "taskd-gcal-view"; // localStorage namespace
 
 // Back-compat alias: the historic constant is now just the default zoom.
 export const PX_PER_MIN = DEFAULT_PX_PER_MIN;
@@ -152,50 +151,6 @@ export function saveZoom(px: number): void {
   }
 }
 
-// --- multi-day view --------------------------------------------------------
-
-export type ViewMode = "day" | "3day" | "week";
-export const VIEW_MODES: ViewMode[] = ["day", "3day", "week"];
-
-// Column count for a mode; also the number of days prev/next steps by.
-export function spanFor(mode: ViewMode): number {
-  return mode === "week" ? 7 : mode === "3day" ? 3 : 1;
-}
-
-// Monday (local midnight) of the ISO week containing `d`.
-export function weekStart(d: Date): Date {
-  const off = (startOfDay(d).getDay() + 6) % 7; // Mon=0 … Sun=6
-  return addDays(d, -off);
-}
-
-// The days a mode shows, given an anchor day. Week snaps to its Monday; day and
-// 3-day start at the anchor.
-export function viewDays(anchor: Date, mode: ViewMode): Date[] {
-  const start = mode === "week" ? weekStart(anchor) : startOfDay(anchor);
-  return Array.from({ length: spanFor(mode) }, (_, i) => addDays(start, i));
-}
-
-// The seven days (Mon–Sun) of the week containing `now` — kept as a named
-// helper (used elsewhere/tests); now expressed through viewDays.
-export function weekDays(now: Date): Date[] {
-  return viewDays(now, "week");
-}
-
-export function loadView(): ViewMode {
-  try {
-    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(VIEW_KEY) : null;
-    return (VIEW_MODES as string[]).includes(raw ?? "") ? (raw as ViewMode) : "day";
-  } catch {
-    return "day";
-  }
-}
-export function saveView(mode: ViewMode): void {
-  try {
-    if (typeof localStorage !== "undefined") localStorage.setItem(VIEW_KEY, mode);
-  } catch {
-    /* ignore */
-  }
-}
 
 // --- geometry (all zoom-parameterized) -------------------------------------
 

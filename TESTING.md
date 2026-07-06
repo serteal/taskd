@@ -143,7 +143,7 @@ Extensions test their own surfaces with the same fidelity, and their
 Playwright specs run in the same 220-test count:
 
 - **gcal/e2e/calendar** — rail renders a timed event + opens its detail;
-  all-day strip; day nav (now-line disappears/returns); Day↔Week toggle;
+  all-day strip; day nav (now-line disappears/returns); single-day only (no view toggle);
   zoom taller; keyboard nudge/clear a timebox; drag the top handle to resize
   the start.
 - **github/e2e/github** — issues render with a `repo#number` subtitle; the

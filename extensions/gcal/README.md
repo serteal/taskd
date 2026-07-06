@@ -6,7 +6,7 @@ A **mock** Google Calendar integration, in two halves:
   events — daily standups, meetings, a lunch, a focus block, an all-day
   event — and mirrors them into tasks with `source: "gcal:<account>"`; and
 - a **web bundle** that presents those calendar-event tasks nicely and docks a
-  persistent **"Today" panel** (Day / 3d / Week modes) on the right of the app,
+  persistent single-day **"Today" panel** (prev/next arrows to step days) on the right of the app,
   where you can see events and drag your todos onto the grid to timebox them.
 
 > **MOCK DATA.** There is no Google API here. `mock.go` invents the events
@@ -16,7 +16,7 @@ A **mock** Google Calendar integration, in two halves:
 > shape — the `main.go` wiring and the entire web half stay unchanged. The
 > event `external_data` schema (`start`, `end`, `all_day`, `location`,
 > `description`) is identical to the [`ics`](../ics) syncer's, so both feed
-> the same presenter and week view.
+> the same presenter and day rail.
 
 ## Install
 

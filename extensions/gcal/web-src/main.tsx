@@ -1,9 +1,10 @@
 // gcal web half: the calendar-event presenter plus a persistent day-rail
-// panel. The panel docks on the right of the app and shows a timeline — one
-// day by default, or a 3-day / week span. A task dragged onto it from anywhere
-// (core rows are drag sources) gets a user_data.timebox on the dropped day, at
-// the dropped time; placed timeboxes can then be moved, resized, keyboard-
-// nudged, or cleared. Default-exports the TaskdExtension the host imports.
+// panel. The panel docks on the right of the app and shows a single-day
+// timeline, stepped with prev/next arrows. A task dragged onto it from
+// anywhere (core rows are drag sources) gets a user_data.timebox on the shown
+// day, at the dropped time; placed timeboxes can then be moved, resized,
+// keyboard-nudged, or cleared. Default-exports the TaskdExtension the host
+// imports.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
@@ -19,7 +20,6 @@ import {
   MAX_PX_PER_MIN,
   MIN_PX_PER_MIN,
   MONO,
-  VIEW_MODES,
   addDays,
   atMinute,
   eventInterval,
@@ -27,28 +27,18 @@ import {
   gridHeight,
   isAllDay,
   isGcal,
-  loadView,
   loadZoom,
   minuteToY,
   minutesOfDay,
   sameDay,
-  saveView,
   saveZoom,
-  spanFor,
   startOfDay,
-  viewDays,
   zoomIn,
   zoomOut,
   type Interval,
-  type ViewMode,
 } from "./util";
 
 const SANS = '"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif';
-
-// Per-column minimum width when more than one day is shown; below this the
-// columns scroll horizontally inside the fixed-width panel (panel stays narrow
-// so Day mode reads clean).
-const COL_MIN_W = 118;
 
 // The bit of the generated TaskService client the rail needs. A timeline must
 // show every event on the day, including past ones the source has marked
@@ -62,26 +52,23 @@ type ListClient = {
 
 const hours = Array.from({ length: HOUR_END - HOUR_START + 1 }, (_, i) => HOUR_START + i);
 
-const VIEW_LABEL: Record<ViewMode, string> = { day: "Day", "3day": "3d", week: "Week" };
-
 function DayRail({ api }: { api: ExtensionAPI }) {
   const tasks = api.hooks.useTasks();
   const now = api.hooks.useNow();
 
-  const [mode, setMode] = useState<ViewMode>(loadView);
-  // The visible span is anchored at "today + offset" days; deriving from an
-  // offset (rather than a pinned Date) keeps it correct across a midnight tick.
+  // The visible day is anchored at "today + offset"; deriving from an offset
+  // (rather than a pinned Date) keeps it correct across a midnight tick.
   const [offset, setOffset] = useState(0);
   const [zoom, setZoom] = useState<number>(loadZoom);
 
   useEffect(() => saveZoom(zoom), [zoom]);
-  useEffect(() => saveView(mode), [mode]);
 
   const today = startOfDay(now);
   const anchor = addDays(today, offset);
-  const days = viewDays(anchor, mode);
-  const multi = mode !== "day";
-  const isTodayInView = days.some((d) => sameDay(d, today));
+  // A one-element array: the all-day strip and hour body render per-day, and
+  // keeping that shape means DayColumn and the strip stay day-count-agnostic.
+  const days = [anchor];
+  const isTodayInView = sameDay(anchor, today);
 
   // Calendar events fetched once from the server (includes completed past ones
   // the active replica omits).
@@ -190,14 +177,7 @@ function DayRail({ api }: { api: ExtensionAPI }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollSignal]);
 
-  const step = spanFor(mode);
-  const focusDay = (day: Date) => {
-    setMode("day");
-    setOffset(Math.round((day.getTime() - today.getTime()) / 86_400_000));
-  };
-
   const height = gridHeight(zoom);
-  const contentWidth: number | string = multi ? GUTTER_W + days.length * COL_MIN_W : "100%";
   const stickyLeft: CSSProperties = {
     width: GUTTER_W,
     flexShrink: 0,
@@ -220,40 +200,18 @@ function DayRail({ api }: { api: ExtensionAPI }) {
         fontFamily: SANS,
       }}
     >
-      {/* Toolbar row: view toggle + zoom */}
+      {/* Toolbar row: zoom */}
       <div
         style={{
           display: "flex",
           alignItems: "center",
+          justifyContent: "flex-end",
           gap: 6,
           padding: "6px 10px",
           borderBottom: "1px solid var(--line)",
           flexShrink: 0,
         }}
       >
-        <div style={{ display: "flex", gap: 2 }} role="group" aria-label="View">
-          {VIEW_MODES.map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              aria-pressed={mode === m}
-              title={`${VIEW_LABEL[m]} view`}
-              style={{
-                border: "1px solid var(--line)",
-                borderRadius: 5,
-                background: mode === m ? "var(--accent)" : "var(--surface)",
-                color: mode === m ? "var(--bg)" : "var(--muted)",
-                fontFamily: MONO,
-                fontSize: 10,
-                padding: "3px 7px",
-                cursor: "pointer",
-              }}
-            >
-              {VIEW_LABEL[m]}
-            </button>
-          ))}
-        </div>
-        <div style={{ flex: 1 }} />
         <div style={{ display: "flex", alignItems: "center", gap: 2 }} role="group" aria-label="Zoom">
           <ZoomButton label="−" title="Zoom out" onClick={() => setZoom(zoomOut)} disabled={zoom <= MIN_PX_PER_MIN + 1e-6} />
           <span
@@ -277,33 +235,21 @@ function DayRail({ api }: { api: ExtensionAPI }) {
           flexShrink: 0,
         }}
       >
-        <NavButton
-          label="‹"
-          title={multi ? "Previous period" : "Previous day"}
-          onClick={() => setOffset((o) => o - step)}
-        />
+        <NavButton label="‹" title="Previous day" onClick={() => setOffset((o) => o - 1)} />
         <div style={{ flex: 1, minWidth: 0, textAlign: "center" }}>
-          {multi ? (
-            <div style={{ fontSize: 12, fontWeight: 600, color: isTodayInView ? "var(--accent)" : "var(--ink)" }}>
-              {rangeLabel(days[0], days[days.length - 1])}
-            </div>
-          ) : (
-            <>
-              <div
-                style={{
-                  fontSize: 13,
-                  fontWeight: 600,
-                  lineHeight: 1.2,
-                  color: isTodayInView ? "var(--accent)" : "var(--ink)",
-                }}
-              >
-                {days[0].toLocaleDateString(undefined, { weekday: "long" })}
-              </div>
-              <div style={{ fontFamily: MONO, fontSize: 11, color: "var(--muted)" }}>
-                {days[0].toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-              </div>
-            </>
-          )}
+          <div
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              lineHeight: 1.2,
+              color: isTodayInView ? "var(--accent)" : "var(--ink)",
+            }}
+          >
+            {anchor.toLocaleDateString(undefined, { weekday: "long" })}
+          </div>
+          <div style={{ fontFamily: MONO, fontSize: 11, color: "var(--muted)" }}>
+            {anchor.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+          </div>
         </div>
         {!isTodayInView && (
           <button
@@ -324,10 +270,10 @@ function DayRail({ api }: { api: ExtensionAPI }) {
             today
           </button>
         )}
-        <NavButton label="›" title={multi ? "Next period" : "Next day"} onClick={() => setOffset((o) => o + step)} />
+        <NavButton label="›" title="Next day" onClick={() => setOffset((o) => o + 1)} />
       </div>
 
-      {/* Scrolling timeline: (per-day headers) + all-day strip + hour body */}
+      {/* Scrolling timeline: all-day strip + hour body */}
       <div
         ref={scrollRef}
         data-testid="cal-scroll"
@@ -335,40 +281,13 @@ function DayRail({ api }: { api: ExtensionAPI }) {
           flex: 1,
           minHeight: 0,
           overflowY: "auto",
-          overflowX: multi ? "auto" : "hidden",
+          overflowX: "hidden",
           background: "var(--surface)",
         }}
       >
-        <div style={{ width: contentWidth }}>
-          {/* Sticky header block: per-day labels (multi only) + all-day strip */}
+        <div style={{ width: "100%" }}>
+          {/* Sticky header block: the all-day strip */}
           <div style={{ position: "sticky", top: 0, zIndex: 5, background: "var(--surface)" }}>
-            {multi && (
-              <div style={{ display: "flex", borderBottom: "1px solid var(--line)" }}>
-                <div style={stickyLeft} />
-                {days.map((d) => (
-                  <button
-                    key={+d}
-                    onClick={() => focusDay(d)}
-                    title={`Focus ${d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}`}
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      textAlign: "center",
-                      padding: "3px 2px",
-                      border: "none",
-                      borderLeft: "1px solid var(--line)",
-                      background: sameDay(d, today) ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "transparent",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <div style={{ fontSize: 11, fontWeight: 600, color: sameDay(d, today) ? "var(--accent)" : "var(--ink)" }}>
-                      {d.toLocaleDateString(undefined, { weekday: "short" })}
-                    </div>
-                    <div style={{ fontFamily: MONO, fontSize: 10, color: "var(--muted)" }}>{d.getDate()}</div>
-                  </button>
-                ))}
-              </div>
-            )}
             <div style={{ display: "flex" }}>
               <div
                 style={{
@@ -485,16 +404,6 @@ function DayRail({ api }: { api: ExtensionAPI }) {
       </div>
     </div>
   );
-}
-
-// Compact label for a multi-day span, e.g. "Jul 6 – 12" or "Jun 30 – Jul 6".
-function rangeLabel(a: Date, b: Date): string {
-  const left = a.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  const right = b.toLocaleDateString(
-    undefined,
-    a.getMonth() === b.getMonth() ? { day: "numeric" } : { month: "short", day: "numeric" },
-  );
-  return `${left} – ${right}`;
 }
 
 function NavButton({ label, title, onClick }: { label: string; title: string; onClick: () => void }) {

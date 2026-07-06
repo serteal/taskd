@@ -25,10 +25,6 @@ import {
   resizedTimebox,
   resizedTimeboxStart,
   sameDay,
-  spanFor,
-  viewDays,
-  weekDays,
-  weekStart,
   withEndMinute,
   withStartMinute,
   withStartMinuteKeepEnd,
@@ -114,38 +110,6 @@ describe("zoom", () => {
     expect(zoomOut(DEFAULT_PX_PER_MIN)).toBeLessThan(DEFAULT_PX_PER_MIN);
     expect(zoomIn(MAX_PX_PER_MIN)).toBe(MAX_PX_PER_MIN);
     expect(zoomOut(MIN_PX_PER_MIN)).toBe(MIN_PX_PER_MIN);
-  });
-});
-
-describe("multi-day view", () => {
-  it("spanFor counts columns", () => {
-    expect(spanFor("day")).toBe(1);
-    expect(spanFor("3day")).toBe(3);
-    expect(spanFor("week")).toBe(7);
-  });
-  it("viewDays: day starts at the anchor", () => {
-    const days = viewDays(new Date(2026, 6, 8), "day");
-    expect(days).toHaveLength(1);
-    expect(days[0].getDate()).toBe(8);
-  });
-  it("viewDays: 3-day is the anchor plus two", () => {
-    const days = viewDays(new Date(2026, 6, 8), "3day");
-    expect(days.map((d) => d.getDate())).toEqual([8, 9, 10]);
-  });
-  it("viewDays: week snaps to Monday", () => {
-    const days = viewDays(new Date(2026, 6, 8), "week"); // Wed
-    expect(days).toHaveLength(7);
-    expect(days[0].getDay()).toBe(1); // Monday
-    expect(days[0].getDate()).toBe(6);
-  });
-  it("weekStart is the Monday of the containing week", () => {
-    expect(weekStart(new Date(2026, 6, 8)).getDate()).toBe(6);
-    expect(weekStart(new Date(2026, 6, 12)).getDate()).toBe(6); // Sunday still maps back
-  });
-  it("weekDays returns Mon..Sun", () => {
-    const days = weekDays(new Date(2026, 6, 8));
-    expect(days[0].getDate()).toBe(6);
-    expect(days[6].getDate()).toBe(12);
   });
 });
 

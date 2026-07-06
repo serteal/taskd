@@ -81,18 +81,17 @@ test.describe("gcal calendar rail", () => {
     await expect(page.getByTestId("cal-nowline")).toBeVisible();
   });
 
-  test("view toggle switches between Day and Week (1 vs 7 day columns)", async ({ page }) => {
+  test("the rail is single-day only: one column, no view toggle", async ({ page }) => {
     const rail = page.getByTestId("calendar-rail");
-    await expect(page.getByTestId("cal-daycolumn")).toHaveCount(1); // Day is the default
-
-    await rail.getByRole("button", { name: "Week", exact: true }).click();
-    await expect(page.getByTestId("cal-daycolumn")).toHaveCount(7);
-
-    await rail.getByRole("button", { name: "3d", exact: true }).click();
-    await expect(page.getByTestId("cal-daycolumn")).toHaveCount(3);
-
-    await rail.getByRole("button", { name: "Day", exact: true }).click();
     await expect(page.getByTestId("cal-daycolumn")).toHaveCount(1);
+    await expect(rail.getByRole("button", { name: "Week", exact: true })).toHaveCount(0);
+    await expect(rail.getByRole("button", { name: "3d", exact: true })).toHaveCount(0);
+
+    // Arrows still step a day at a time and "today" returns.
+    await rail.getByRole("button", { name: "Next day" }).click();
+    await expect(page.getByTestId("cal-daycolumn")).toHaveCount(1);
+    await rail.getByRole("button", { name: "today" }).click();
+    await expect(page.getByTestId("cal-nowline")).toBeVisible();
   });
 
   test("zooming in makes the hour scale taller", async ({ page, api }) => {
