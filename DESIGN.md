@@ -100,9 +100,13 @@ Decisions:
   namespace their keys (`user_data.timebox`, `user_data.gcal`, …) so they
   coexist without a registry. If a filter dimension is ever needed on
   external detail, the syncer *lifts it into a label* (e.g. `pr:approved`).
-- **No task hierarchy, no recurrence in the schema.** Sub-tasks, recurring
-  tasks, and reminders are real features, but each is an additive field or
-  RPC later — none justifies pre-building now.
+- **Sub-tasks and recurrence are additive fields.** Both landed exactly as
+  this design predicted they would — plain fields on `Task` (`parent_id`,
+  `recurrence`), no new message or subsystem. `parent_id` caps hierarchy at
+  one level (a checklist under a task); `recurrence` is a canonical RRULE
+  subset, and completing a recurring task rolls it forward (archiving a
+  completed copy, advancing the live task's `due_time`) rather than closing
+  it. Reminders remain a future additive field on the same principle.
 
 ## 5. Sync: one-way field ownership instead of conflict resolution
 

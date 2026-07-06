@@ -27,10 +27,12 @@ open http://127.0.0.1:8888   # the web app — same port as the API
 The web app is a live replica: change a task from the CLI, a syncer, or
 another window and it appears in the browser instantly (rows that changed
 from outside pulse once). It's a Todoist/Linear-flavored app —
-list and board views, a quick-add overlay, a ⌘K command palette + search,
-multi-select and bulk actions, undo, drag-to-timebox onto a day-timeline
-rail, saved views, and a hand-authored SVG icon set — and keyboard-first
-(`q` add, `⌘K` commands, `j/k` move, `x` done, `?` for the full list).
+list and board views, a quick-add overlay ("pay rent every month",
+"fri 3pm"), recurring tasks, subtasks, a ⌘K command palette + search,
+multi-select and bulk actions, undo (⌘Z), drag-to-timebox onto a
+day-timeline rail, saved views and filters, and a hand-authored SVG icon
+set — and keyboard-first (`q` add, `⌘K` commands, `j/k` move, `x` done,
+`?` for the full list).
 (`make build` skips the UI and Node entirely; taskd then serves the API
 plus a pointer page.)
 

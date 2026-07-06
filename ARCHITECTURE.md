@@ -15,7 +15,8 @@ and every integration are all just clients of that service.
 ```
 proto/task/task.proto     The entire public API, fully commented. Read this first.
 gen/task/                 Generated Go (protoc-gen-go + protoc-gen-connect-go).
-internal/store/           SQLite: schema, filters→SQL, keyset pagination, upsert.
+internal/store/           SQLite: migrations, filters→SQL, keyset pagination, upsert.
+internal/recur/           Recurrence: canonical RRULE subset, natural-language mapping.
 internal/server/          TaskService handlers + the watch fan-out hub.
 internal/extension/       Extension host: supervise syncers, serve web bundles.
 internal/daemon/          Assembly: config, listeners, extension startup.
@@ -39,14 +40,19 @@ touches the store; extensions and all binaries speak only the public API.
 
 `taskd` listens on `127.0.0.1:8888` (config `listen:`) and optionally a
 0600 unix socket (config `socket:`). One h2c port serves the Connect,
-gRPC, and gRPC-Web protocols simultaneously, plus `GET /healthz` and the
-extension routes under `/ext/`. Data lives in `$TASKD_DIR` (default
-`~/.taskd`): `tasks.db`, `config.yaml`, and `extensions/`.
+gRPC, and gRPC-Web protocols simultaneously, plus `GET /healthz`,
+`GET /version`, and the extension routes under `/ext/`. Data lives in
+`$TASKD_DIR` (default `~/.taskd`): `tasks.db` (schema versioned via
+`PRAGMA user_version` migrations), `config.yaml`, and `extensions/`. On its
+first run in a data dir the daemon opens the web app in a browser
+(`-no-open`/`open: false` suppress; `TASKD_NO_OPEN` beats everything — test
+harnesses rely on it).
 
 ```yaml
 # ~/.taskd/config.yaml — everything optional
 listen: 127.0.0.1:8888
 socket: /Users/me/.taskd/taskd.sock
+open: false
 ```
 
 Integrations are NOT configured here — they are extensions (folders under
@@ -63,10 +69,10 @@ documented there. The shape:
 
 | RPC | Purpose |
 |---|---|
-| `CreateTask` | New local task (title, notes, labels, due). |
-| `GetTask` / `DeleteTask` | By id. Delete is permanent. |
-| `UpdateTask` | Field-mask write over `title, notes, labels, due_time, completed_time`; optional `expected_revision` (mismatch ⇒ `ABORTED`). Completing = setting `completed_time`. |
-| `ListTasks` | Structured `TaskFilter` + `order_by` (`created`/`updated`/`due`/`title`, ` asc`/` desc`) + keyset pagination. |
+| `CreateTask` | New local task (title, notes, labels, due, recurrence, parent). |
+| `GetTask` / `DeleteTask` | By id. Delete is permanent; a deleted parent's subtasks re-parent to top-level, never cascade. |
+| `UpdateTask` | Field-mask write over `title, notes, labels, due_time, completed_time, user_data, recurrence, parent_id`; optional `expected_revision` (mismatch ⇒ `ABORTED`). Completing = setting `completed_time` — except a recurring task, which is never completed: in one transaction the server archives a frozen copy (returned as `spawned_occurrence`) and advances the live task's due to the next occurrence. |
+| `ListTasks` | Structured `TaskFilter` + `order_by` (`created`/`updated`/`due`/`title`/`completed`, ` asc`/` desc`) + keyset pagination. |
 | `UpsertExternalTasks` | Syncer entry point: reconcile one source's tasks in a batch keyed `(source, external_ref)`. |
 | `WatchTasks` | Server stream of every change from now; no history. |
 | `ListLabels` | Distinct labels + counts, for filter chips. |
@@ -180,6 +186,8 @@ lets an extension:
   panel beside the main view, visible over any view (the calendar day-rail).
 - `registerCommand(...)` / `registerQuickAddToken(...)` — add ⌘K palette
   entries and new-task token handlers.
+- `registerTheme({ id, label, group, mode, vars })` — contribute a theme to
+  the Settings picker, grouped under `group` alongside the built-in catalog.
 - read the live task replica (`hooks.useTasks()` / `getTasks()`), mutate
   optimistically (`store.update` etc.), raise toasts / browser notifications
   (`notify`), draw core SVG icons (`icon("calendar")`) or inline your own,
@@ -206,15 +214,19 @@ top-level key in `external_data` (source-owned) or `user_data`
 ## Storage
 
 Column-mapped SQLite, WAL, single writer. Timestamps are unix
-milliseconds; proto timestamps are truncated to ms on write.
+milliseconds; proto timestamps are truncated to ms on write. Schema changes
+are ordered migrations stamped into `PRAGMA user_version`
+(`internal/store/migrate.go`); each runs in its own transaction.
 
 ```
 tasks(id PK, title, notes, due_ms?, completed_ms?, source, external_ref,
-      external_data JSON, user_data JSON, revision, created_ms, updated_ms)
+      external_data JSON, user_data JSON, recurrence, parent_id,
+      revision, created_ms, updated_ms)
 task_labels(task_id → tasks ON DELETE CASCADE, label; PK(task_id, label))
 ```
 
-Unique partial index on `(source, external_ref)` where source ≠ ''.
+Unique partial index on `(source, external_ref)` where source ≠ '';
+index on `parent_id`.
 Every `TaskFilter` dimension maps to an index or a `task_labels` join; text
 search is `LIKE` over title+notes (FTS5 is the designated upgrade).
 Pagination is keyset (`ORDER BY sortkey, id` + comparison against the

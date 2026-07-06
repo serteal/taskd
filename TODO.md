@@ -57,21 +57,40 @@ decisions). The only server-side additions the model needs are: a way to
 
 M1–M3 shipped 2026-07-05 (commits `ea32a77`→`b40c00b`; see git log for the
 per-item breakdown). All of M3 (timeboxing) is done and removed from this
-list — which is why the milestones below jump from M2 to M4. The few M1/M2
-leftovers are kept in their sections; everything from M4 on is future work.
+list — which is why the milestones below jump from M2 to M4. Everything from
+M4 on is future work.
+
+2026-07-06 release-readiness batch shipped the remaining M1 launch DX and
+more, all removed below per this file's convention: auto-open + first-run
+onboarding + explicit disconnected state; version stamping end-to-end
+(`-version` flags, `GET /version`, shown in Settings → About); versioned
+SQLite migrations (`PRAGMA user_version`); **promotion into built-in lists**
+(`SavedFilter.showIn` → named sections in Today/Inbox/Upcoming), making the
+"calendar events labelled `focus` → Today" promise real; Upcoming = strictly
+future; sidebar/label quarantine (labels count local tasks only, `synced=1`
+escape hatch); synced tasks can no longer be completed from the UI (the next
+sync would revert it — write-back is still M4); global ⌘Z undo; versioned
+localStorage envelopes; richer quick-add/CLI dates (`next monday`,
+`in 2 weeks`, `fri 3pm`, time-of-day); reminders catch-up ("N tasks became
+due while you were away"); Settings reorder + real daemon version + paused
+sources; detail panel + calendar rail coexist ≥1440px.
+
+A release pipeline (goreleaser, tag-triggered GitHub release workflow, a
+checksum-verifying `install.sh`, CI) was built and verified in the same
+batch, then removed the same day by decision — the repo carries no CI for
+now. The **Release story** item below is the surviving roadmap entry.
 
 ---
 
-## M1 — Daily driver on localhost
+## Release story (deliberately not built yet)
 
-*Make it the thing you actually open every day: installable, and free of the
-rough edges. Mostly web-only; no proto changes.*
-
-- [ ] **First-run & launch DX.** First-run empty state exists; still to do:
-      `taskd` optionally auto-opens the browser + richer "install-as-app /
-      connect a source" onboarding.
-- [ ] **Release story.** Prebuilt `taskd`/`task`/`task-mcp` binaries (web UI
-      embedded) + a one-line install + CI — packaging infra, not yet built.
+- [ ] **Prebuilt binaries + one-line install + CI.** Prebuilt
+      `taskd`/`task`/`task-mcp` (web UI embedded) + bundled extension
+      artifacts, an install one-liner, and CI to produce them. A working
+      goreleaser + Actions + `install.sh` setup existed briefly on
+      2026-07-06 (never committed); rebuild it when releasing becomes real.
+      Version stamping (`internal/version`, `-ldflags` in the Makefile) is
+      already in place and stays.
 
 ---
 
@@ -123,11 +142,16 @@ live-load hook already exist; build the rest of the loop.*
 - [ ] **Test harness.** Formalize running a bundle against a mock `api` in
       vitest (the `web/testkit` `mockApi` + `defineExtensionE2E` are the
       foundation).
-- [ ] **API stability contract.** Document the extension API surface (5
+- [ ] **API stability contract.** Document the extension API surface (6
       register hooks + `api.hooks/getTasks/store/client/ui/dnd/notify/icon/
       format`) and its pre-freeze → frozen guarantees.
 - [ ] **Panel docking beyond "right."** `Panel.side` only supports `"right"`;
       add left/bottom if a second concrete consumer needs it (rule of three).
+- [ ] **Expose source/extension status to panels.** The calendar rail shows a
+      paused source's events with no indication they're stale — a panel can't
+      currently tell that its own source is paused. Surface source/extension
+      status through `api` (e.g. a status field/hook) so a panel can badge or
+      dim a paused feed. Deferred pending API design.
 - [ ] **Distribution.** `taskd ext install <url>` + a trust prompt; a
       capability/permission model (installing an extension = running code
       today); optionally a registry. Design carefully — this is the one place
@@ -141,17 +165,24 @@ live-load hook already exist; build the rest of the loop.*
 nothing renamed/removed, per the freeze plan in DESIGN.md §3). Sequence after
 the app feels good, so the schema settles around real usage.*
 
-- [ ] **Sub-tasks / hierarchy** — a `parent_id` field; roll-up counts, nested
-      rendering, drag-to-nest.
-- [ ] **Recurring tasks** — a recurrence-rule field + expansion (on complete,
-      spawn the next); natural-language "every weekday" in quick-add.
-- [ ] **Reminders / scheduled notifications** — a scheduler + delivery. For an
-      installed PWA this likely means a service worker + local scheduling; the
-      browser-notification stub (`api.notify.browser`) is the delivery seam.
+*Recurring tasks and one-level sub-tasks shipped 2026-07-06 (additive
+`recurrence`/`parent_id` fields; server-side roll-forward on complete;
+re-parent-never-cascade deletes). Left for later in that area:
+drag-to-nest, deeper nesting (rule of three), roll-up counts beyond the
+open-subtask chip, recurrence anchored on completion date rather than
+due date, and a per-rule TZID — recurrence rules currently follow the
+daemon's local wall clock (documented in the proto; roll-forward preserves
+each occurrence's local time-of-day across DST shifts), so a per-rule
+timezone is the eventual fix only if the daemon ever serves clients in
+other timezones. Deferred.*
+
+- [ ] **Reminders while the app is closed** — a scheduler + delivery. In-app
+      due reminders + the reopen catch-up summary shipped 2026-07-06; what
+      remains is firing with no page open. For an installed PWA this likely
+      means a service worker + local scheduling; the browser-notification
+      stub (`api.notify.browser`) is the delivery seam.
 - [ ] **Comments / activity log** — per-task notes/history (additive; consider
       whether this is a repeated field or a small side table).
-- [ ] **Richer natural-language dates** in quick-add — "next monday", "in 2
-      weeks", "fri 3pm" (today: today/tomorrow/Nd/weekday/ISO).
 
 ---
 
