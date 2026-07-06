@@ -1,8 +1,9 @@
 // A single positioned block in a day column: either a calendar event (filled,
 // accent, read-only) or a user timebox (outlined, ink). Timeboxes are
-// interactive — a body drag to move, a bottom handle to resize, a ✕ to clear,
-// and full keyboard control when focused. Geometry (top/height/left/width) is
-// computed by the caller; this component only wires it to the DOM.
+// interactive — a body drag to move, top/bottom handles to resize, a ✕ to
+// clear, and full keyboard control when focused. Geometry
+// (top/height/left/width) is computed by the caller; this component only
+// wires it to the DOM.
 
 import { useState } from "react";
 import type { CSSProperties, KeyboardEvent, PointerEvent } from "react";
@@ -26,7 +27,8 @@ export interface EventBlockProps {
   interactive?: boolean;
   selected?: boolean;
   onPointerDownMove?: (e: PointerEvent) => void;
-  onPointerDownResize?: (e: PointerEvent) => void;
+  onPointerDownResize?: (e: PointerEvent) => void; // bottom edge (end time)
+  onPointerDownResizeTop?: (e: PointerEvent) => void; // top edge (start time)
   onKeyDown?: (e: KeyboardEvent) => void;
   onFocus?: () => void;
   onBlur?: () => void;
@@ -47,6 +49,7 @@ export function EventBlock({
   selected,
   onPointerDownMove,
   onPointerDownResize,
+  onPointerDownResizeTop,
   onKeyDown,
   onFocus,
   onBlur,
@@ -136,6 +139,26 @@ export function EventBlock({
       </div>
       {h >= 28 && (
         <div style={{ fontFamily: MONO, fontSize: 10, color: "var(--muted)", marginTop: 1 }}>{time}</div>
+      )}
+      {interactive && onPointerDownResizeTop && (
+        <div
+          data-testid="cal-timebox-resize-top"
+          aria-hidden="true"
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            onPointerDownResizeTop(e);
+          }}
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            top: 0,
+            height: 7,
+            cursor: "ns-resize",
+            // A subtle grip when the block is roomy enough to show it.
+            borderTop: raised ? "2px solid color-mix(in srgb, var(--ink) 45%, transparent)" : "none",
+          }}
+        />
       )}
       {interactive && onPointerDownResize && (
         <div

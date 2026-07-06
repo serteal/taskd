@@ -23,6 +23,7 @@ import {
   nudgeStart,
   parseISO,
   resizedTimebox,
+  resizedTimeboxStart,
   sameDay,
   spanFor,
   viewDays,
@@ -30,6 +31,7 @@ import {
   weekStart,
   withEndMinute,
   withStartMinute,
+  withStartMinuteKeepEnd,
   zoomIn,
   zoomOut,
   type Interval,
@@ -159,6 +161,18 @@ describe("timebox mutation", () => {
     const resized = resizedTimebox(iv(9, 0, 10, 0), 27, PX);
     expect(minutesOfDay(resized.end)).toBe(10 * 60 + 30);
     expect(minutesOfDay(resized.start)).toBe(9 * 60); // start unchanged
+  });
+  it("withStartMinuteKeepEnd enforces a minimum duration and the band start", () => {
+    const shrunk = withStartMinuteKeepEnd(iv(9, 0, 10, 0), 9 * 60 + 55); // above end - MIN_BOX_MIN
+    expect(minutesOfDay(shrunk.start)).toBe(10 * 60 - MIN_BOX_MIN);
+    expect(minutesOfDay(withStartMinuteKeepEnd(iv(9, 0, 10, 0), 0).start)).toBe(HOUR_START * 60);
+    expect(minutesOfDay(shrunk.end)).toBe(10 * 60); // end unchanged
+  });
+  it("resizedTimeboxStart moves the start by a snapped pixel delta, preserving the end", () => {
+    // -27px at 0.9px/min = -30min → 8:30 start (snap 15).
+    const resized = resizedTimeboxStart(iv(9, 0, 10, 0), -27, PX);
+    expect(minutesOfDay(resized.start)).toBe(8 * 60 + 30);
+    expect(minutesOfDay(resized.end)).toBe(10 * 60); // end unchanged
   });
   it("nudgeStart / nudgeDuration move by whole minutes", () => {
     expect(minutesOfDay(nudgeStart(iv(9, 0, 10, 0), -30).start)).toBe(8 * 60 + 30);

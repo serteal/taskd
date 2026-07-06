@@ -1,7 +1,8 @@
 // A single day's hour column: faint gridlines, an optional "now" line, and
 // positioned event/timebox blocks — and an HTML5 drop target that timeboxes a
 // task dragged in from the core list. Timeboxes placed here can be moved
-// (body drag), resized (bottom handle), and driven by keyboard when focused.
+// (body drag), resized (top/bottom handles), and driven by keyboard when
+// focused.
 //
 // Two distinct gestures, deliberately kept apart:
 //   • CREATE — an HTML5 drop of a task dragged in from OUTSIDE the panel
@@ -33,6 +34,7 @@ import {
   nudgeDuration,
   nudgeStart,
   resizedTimebox,
+  resizedTimeboxStart,
   sameDay,
   type Interval,
 } from "./util";
@@ -74,7 +76,7 @@ function blocksForDay(day: Date, timedEvents: Task[], timeboxed: Task[], pxPerMi
 interface DragState {
   key: string;
   task: Task;
-  mode: "move" | "resize";
+  mode: "move" | "resize-start" | "resize-end";
   startClientY: number;
   origIv: Interval;
 }
@@ -131,7 +133,7 @@ export function DayColumn({
   const cleanupRef = useRef<(() => void) | undefined>(undefined);
   useEffect(() => () => cleanupRef.current?.(), []); // tidy up on unmount
 
-  const begin = (mode: "move" | "resize", e: ReactPointerEvent, block: DayBlock) => {
+  const begin = (mode: "move" | "resize-start" | "resize-end", e: ReactPointerEvent, block: DayBlock) => {
     if (e.button !== 0) return; // primary button only
     e.preventDefault();
     cleanupRef.current?.(); // never stack two drags
@@ -143,7 +145,13 @@ export function DayColumn({
 
     const onMove = (ev: PointerEvent) => {
       const delta = ev.clientY - startClientY;
-      setPreview(mode === "move" ? movedTimebox(origIv, delta, pxPerMin) : resizedTimebox(origIv, delta, pxPerMin));
+      setPreview(
+        mode === "move"
+          ? movedTimebox(origIv, delta, pxPerMin)
+          : mode === "resize-start"
+            ? resizedTimeboxStart(origIv, delta, pxPerMin)
+            : resizedTimebox(origIv, delta, pxPerMin),
+      );
     };
     const onUp = () => {
       cleanupRef.current?.();
@@ -264,7 +272,10 @@ export function DayColumn({
             right: 0,
             top: minuteToY(nowMin, pxPerMin),
             borderTop: "1.5px solid var(--warn)",
-            zIndex: 4,
+            // Sit above the gridlines (tree order) but below event/timebox
+            // blocks (z-index >= 1) so the line stays visible over empty grid
+            // yet never clips the title of an event starting right at "now".
+            zIndex: 0,
           }}
         >
           <div
@@ -301,7 +312,8 @@ export function DayColumn({
             interactive={isTimebox}
             selected={focusedKey === block.key}
             onPointerDownMove={isTimebox ? (e) => begin("move", e, block) : undefined}
-            onPointerDownResize={isTimebox ? (e) => begin("resize", e, block) : undefined}
+            onPointerDownResizeTop={isTimebox ? (e) => begin("resize-start", e, block) : undefined}
+            onPointerDownResize={isTimebox ? (e) => begin("resize-end", e, block) : undefined}
             onKeyDown={isTimebox ? (e) => onBlockKeyDown(e, block) : undefined}
             onFocus={isTimebox ? () => setFocusedKey(block.key) : undefined}
             onBlur={isTimebox ? () => setFocusedKey((k) => (k === block.key ? null : k)) : undefined}

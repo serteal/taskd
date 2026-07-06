@@ -23,8 +23,7 @@ GitHub" link.
 ## Install
 
 ```sh
-make extensions                              # builds ./task-sync-github
-node extensions/build-web.mjs extensions/github   # builds web/main.js
+make extensions                              # builds ./task-sync-github + web/main.js
 mkdir -p ~/.taskd/extensions/github
 cp -r manifest.json task-sync-github web ~/.taskd/extensions/github/
 cp config.yaml.example ~/.taskd/extensions/github/config.yaml   # optional

@@ -258,6 +258,15 @@ export function withEndMinute(iv: Interval, endMin: number): Interval {
   return { start: iv.start, end };
 }
 
+// Set an interval's start to `startMin`, keeping its end fixed and enforcing
+// MIN_BOX_MIN and the band start (the top-edge-resize counterpart of
+// withEndMinute; unlike withStartMinute, duration is not preserved).
+export function withStartMinuteKeepEnd(iv: Interval, startMin: number): Interval {
+  const endMin = minutesOfDay(iv.end);
+  const start = atMinute(iv.end, clamp(startMin, HOUR_START * 60, endMin - MIN_BOX_MIN));
+  return { start, end: iv.end };
+}
+
 // Drag-move by a pixel delta: shift start, snapped to SNAP_MIN.
 export function movedTimebox(iv: Interval, deltaPx: number, pxPerMin: number): Interval {
   const raw = minutesOfDay(iv.start) + deltaPx / pxPerMin;
@@ -269,6 +278,13 @@ export function movedTimebox(iv: Interval, deltaPx: number, pxPerMin: number): I
 export function resizedTimebox(iv: Interval, deltaPx: number, pxPerMin: number): Interval {
   const raw = minutesOfDay(iv.end) + deltaPx / pxPerMin;
   return withEndMinute(iv, snapTo(raw, RESIZE_SNAP_MIN));
+}
+
+// Drag-resize the top edge by a pixel delta: move start, snapped to
+// RESIZE_SNAP_MIN, preserving the end.
+export function resizedTimeboxStart(iv: Interval, deltaPx: number, pxPerMin: number): Interval {
+  const raw = minutesOfDay(iv.start) + deltaPx / pxPerMin;
+  return withStartMinuteKeepEnd(iv, snapTo(raw, RESIZE_SNAP_MIN));
 }
 
 // Keyboard nudges: shift start / grow-shrink duration by whole minutes.

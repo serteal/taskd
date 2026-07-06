@@ -5,9 +5,9 @@ A **mock** Google Calendar integration, in two halves:
 - a **syncer** that fabricates a realistic current week (Mon–Fri) of calendar
   events — daily standups, meetings, a lunch, a focus block, an all-day
   event — and mirrors them into tasks with `source: "gcal:<account>"`; and
-- a **web bundle** that presents those calendar-event tasks nicely and adds a
-  **Calendar week view** where you can see events and drag your todos onto the
-  grid to timebox them.
+- a **web bundle** that presents those calendar-event tasks nicely and docks a
+  persistent **"Today" panel** (Day / 3d / Week modes) on the right of the app,
+  where you can see events and drag your todos onto the grid to timebox them.
 
 > **MOCK DATA.** There is no Google API here. `mock.go` invents the events
 > deterministically from the current date; no network, no auth, no keys. To
@@ -29,8 +29,8 @@ cp -r manifest.json task-sync-gcal web ~/.taskd/extensions/gcal/
 ```
 
 Restart `taskd`. It supervises the syncer (restarting with backoff) and logs
-lines prefixed `ext gcal:`, and serves the web bundle so the **Calendar** view
-appears in the app's sidebar. With no `config.yaml`, the syncer prints an info
+lines prefixed `ext gcal:`, and serves the web bundle so the **"Today" panel**
+docks on the right of the app. With no `config.yaml`, the syncer prints an info
 line and runs a single account named `personal` labelled `calendar`.
 
 ## Configure
@@ -42,7 +42,7 @@ not an error.
 
 ## Timeboxing
 
-The Calendar week view lets you drag any unscheduled todo onto an hour cell to
+The panel lets you drag any unscheduled todo onto an hour cell to
 timebox it. That writes `user_data.timebox = { start, end }` (RFC3339) on the
 task — user-owned data that sync never touches, so it survives every calendar
 refresh. The ✕ on a timebox block clears it.
