@@ -16,6 +16,25 @@ async function timeboxStart(api: import("../../../web/testkit/e2e").Api, title: 
   return (await timeboxRange(api, title)).start;
 }
 
+// Default zoom is 0.9 px/min (54 px/hour); each test opens with empty
+// localStorage, so this is the live scale. The full-day grid (00:00–24:00)
+// overflows and auto-scrolls on load, so a fixed viewport clientY no longer
+// maps to a fixed time. Compute the drop's clientY from the (scrolled) day
+// column's live bounding box + the wanted minute, so `dragTo`'s synthetic drop
+// lands at the intended time regardless of the scroll position.
+const PX_PER_MIN = 0.9;
+async function dropAtTime(
+  page: import("@playwright/test").Page,
+  title: string,
+  hour: number,
+  minute = 0,
+): Promise<void> {
+  const col = page.getByTestId("cal-daycolumn").first();
+  const box = (await col.boundingBox())!;
+  const clientY = box.y + (hour * 60 + minute) * PX_PER_MIN;
+  await dragTo(page, title, '[data-testid="cal-daycolumn"]', { clientY });
+}
+
 test.describe("gcal calendar rail", () => {
   test("renders a timed event on today and opens its detail", async ({ page, api }) => {
     await api.upsertExternal("gcal:test", [
@@ -97,7 +116,7 @@ test.describe("gcal calendar rail", () => {
     await seed(api, [{ title: "Write report" }]);
     await expect(row(page, "Write report")).toBeVisible();
 
-    await dragTo(page, "Write report", '[data-testid="cal-daycolumn"]', { clientY: 250 });
+    await dropAtTime(page, "Write report", 12); // noon, comfortably mid-day
     const box = page.getByTestId("cal-timebox");
     await expect(box).toHaveCount(1);
     const before = await timeboxStart(api, "Write report");
@@ -117,7 +136,7 @@ test.describe("gcal calendar rail", () => {
     await seed(api, [{ title: "Write report" }]);
     await expect(row(page, "Write report")).toBeVisible();
 
-    await dragTo(page, "Write report", '[data-testid="cal-daycolumn"]', { clientY: 250 });
+    await dropAtTime(page, "Write report", 12); // noon → top-edge resize has room to move up
     const box = page.getByTestId("cal-timebox");
     await expect(box).toHaveCount(1);
     const before = await timeboxRange(api, "Write report");
@@ -135,5 +154,37 @@ test.describe("gcal calendar rail", () => {
     const after = await timeboxRange(api, "Write report");
     expect(new Date(after.start!).getTime()).toBeLessThan(new Date(before.start!).getTime());
     expect(after.end).toBe(before.end); // end untouched by a start-edge resize
+  });
+
+  test("auto-scrolls near now on load and keeps the now-line in the viewport", async ({ page }) => {
+    const scroll = page.getByTestId("cal-scroll");
+    await expect(page.getByTestId("calendar-rail")).toBeVisible();
+
+    // The full-day grid overflows, so mount parks "now" ~a third down — the
+    // scroll container is not at the top.
+    await expect.poll(() => scroll.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+    // …and the now-line sits inside the visible scroll viewport.
+    const nowline = page.getByTestId("cal-nowline");
+    await expect(nowline).toBeVisible();
+    const nb = (await nowline.boundingBox())!;
+    const sb = (await scroll.boundingBox())!;
+    expect(nb.y).toBeGreaterThanOrEqual(sb.y);
+    expect(nb.y).toBeLessThanOrEqual(sb.y + sb.height);
+  });
+
+  test("a timebox can be placed at 23:00 near the bottom of the full-day grid", async ({ page, api }) => {
+    await seed(api, [{ title: "Late task" }]);
+    await expect(row(page, "Late task")).toBeVisible();
+
+    // 23:00 is far below the auto-scrolled viewport; dropAtTime computes the
+    // clientY against the scrolled column so the drop still lands at 23:00.
+    await dropAtTime(page, "Late task", 23);
+    await expect(page.getByTestId("cal-timebox")).toHaveCount(1);
+
+    await expect.poll(() => timeboxStart(api, "Late task")).toBeTruthy();
+    const start = new Date((await timeboxStart(api, "Late task"))!);
+    expect(start.getUTCHours()).toBe(23);
+    expect(start.getUTCMinutes()).toBe(0);
   });
 });

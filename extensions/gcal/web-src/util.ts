@@ -6,10 +6,11 @@
 
 import type { Task } from "@taskd/extension-api";
 
-// The visible hour band of the day grid.
-export const HOUR_START = 7; // 07:00
-export const HOUR_END = 21; //  21:00
-export const DAY_MINUTES = (HOUR_END - HOUR_START) * 60;
+// The hour band of the day grid — the full calendar day, 00:00–24:00. The
+// grid overflows the panel and scrolls (see main.tsx for the initial anchor).
+export const HOUR_START = 0; //  00:00
+export const HOUR_END = 24; // 24:00 (next midnight)
+export const DAY_MINUTES = (HOUR_END - HOUR_START) * 60; // 1440
 export const GUTTER_W = 54; // hour-label column width, px
 export const HEADER_H = 46; // day-header row height, px (sticky offset base)
 
@@ -212,10 +213,10 @@ export function yToMinute(y: number, pxPerMin: number): number {
   return HOUR_START * 60 + y / pxPerMin;
 }
 
-// Position an interval within the visible band of the day it starts in,
-// clamped to [HOUR_START, HOUR_END]. Returns null when it lies fully outside.
-// Intervals that run past midnight (e.g. an all-day event's next-midnight end)
-// clamp to the day's end.
+// Position an interval within the full-day band of the day it starts in,
+// clamped to [HOUR_START, HOUR_END] (00:00–24:00). Returns null only for a
+// degenerate interval with no positive height. Intervals that run past midnight
+// (e.g. an all-day event's next-midnight end) clamp to the day's end (24:00).
 export function blockRect(
   start: Date,
   end: Date,

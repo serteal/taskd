@@ -49,17 +49,17 @@ const iv = (h1: number, m1: number, h2: number, m2: number): Interval => ({
 
 describe("dropMinutes", () => {
   it("snaps to the 30-minute grid", () => {
-    expect(dropMinutes(0, PX)).toBe(HOUR_START * 60); // 420
-    expect(dropMinutes(27, PX)).toBe(450); // 420 + 27/0.9 = 450
+    expect(dropMinutes(0, PX)).toBe(HOUR_START * 60); // 0 (top of the day)
+    expect(dropMinutes(27, PX)).toBe(30); // 27 / 0.9 = 30 → snaps to 30
   });
-  it("clamps so a default box stays inside the band", () => {
-    expect(dropMinutes(-1000, PX)).toBe(HOUR_START * 60);
-    expect(dropMinutes(1_000_000, PX)).toBe(HOUR_END * 60 - DEFAULT_BOX_MIN);
+  it("clamps so a default box stays inside the day (00:00–24:00)", () => {
+    expect(dropMinutes(-1000, PX)).toBe(HOUR_START * 60); // 0
+    expect(dropMinutes(1_000_000, PX)).toBe(HOUR_END * 60 - DEFAULT_BOX_MIN); // 1380 (23:00)
   });
   it("respects the current zoom", () => {
     // 108px at 2x zoom covers the same 60 minutes as 54px at 1x.
     expect(dropMinutes(108, PX * 2)).toBe(dropMinutes(54, PX));
-    expect(dropMinutes(108, PX * 2)).toBe(HOUR_START * 60 + 60);
+    expect(dropMinutes(108, PX * 2)).toBe(HOUR_START * 60 + 60); // 60 (01:00)
   });
 });
 
@@ -74,15 +74,32 @@ describe("sameDay / minutesOfDay", () => {
 });
 
 describe("blockRect", () => {
-  it("returns null for an interval fully outside the band", () => {
-    expect(blockRect(new Date(2026, 6, 6, 5), new Date(2026, 6, 6, 6), PX)).toBeNull();
-  });
-  it("positions an in-band interval and scales with zoom", () => {
+  it("positions an interval by its true minute-of-day and scales with zoom", () => {
+    // 09:00 = 540 min from midnight; the band starts at 00:00 so top = 540*px.
     const r = blockRect(new Date(2026, 6, 6, 9), new Date(2026, 6, 6, 10), PX)!;
-    expect(r.top).toBeCloseTo((540 - 420) * 0.9); // 108
+    expect(r.top).toBeCloseTo(540 * 0.9); // 486
     expect(r.height).toBeCloseTo(60 * 0.9); // 54
     const zoomed = blockRect(new Date(2026, 6, 6, 9), new Date(2026, 6, 6, 10), PX * 2)!;
     expect(zoomed.height).toBeCloseTo(r.height * 2);
+  });
+  it("renders an early-morning event (05:30) at its true position", () => {
+    // Previously outside the 07:00 window (clipped to null); now on the grid.
+    const r = blockRect(new Date(2026, 6, 6, 5, 30), new Date(2026, 6, 6, 6, 30), PX)!;
+    expect(r).not.toBeNull();
+    expect(r.top).toBeCloseTo(330 * 0.9); // 05:30 = 330 min → 297px
+    expect(r.height).toBeCloseTo(60 * 0.9); // 54
+  });
+  it("renders a late event ending at 23:45 near the bottom of the grid", () => {
+    const r = blockRect(new Date(2026, 6, 6, 22, 0), new Date(2026, 6, 6, 23, 45), PX)!;
+    expect(r).not.toBeNull();
+    expect(r.top).toBeCloseTo(1320 * 0.9); // 22:00 = 1320 min → 1188px
+    expect(r.height).toBeCloseTo(105 * 0.9); // 105 min → 94.5px, well inside 24:00
+  });
+  it("clamps an interval running past midnight to the day end (24:00)", () => {
+    const r = blockRect(new Date(2026, 6, 6, 23, 0), new Date(2026, 6, 7, 1, 0), PX)!;
+    expect(r.top).toBeCloseTo(1380 * 0.9); // 23:00
+    // Bottom clamps to 24:00 (1440 min), not the next-day 01:00.
+    expect(r.top + r.height).toBeCloseTo(HOUR_END * 60 * 0.9); // 1440*0.9
   });
 });
 
@@ -138,17 +155,21 @@ describe("timebox mutation", () => {
     expect(d.getHours()).toBe(9);
     expect(d.getMinutes()).toBe(30);
   });
-  it("withStartMinute preserves duration and clamps into the band", () => {
+  it("withStartMinute preserves duration and clamps into the day", () => {
     const moved = withStartMinute(iv(9, 0, 10, 0), 8 * 60);
     expect(minutesOfDay(moved.start)).toBe(8 * 60);
     expect(moved.end.getTime() - moved.start.getTime()).toBe(60 * 60_000);
-    // A start before the band clamps to HOUR_START.
-    expect(minutesOfDay(withStartMinute(iv(9, 0, 10, 0), 0).start)).toBe(HOUR_START * 60);
+    // A start before 00:00 clamps to the top of the day.
+    expect(minutesOfDay(withStartMinute(iv(9, 0, 10, 0), -60).start)).toBe(HOUR_START * 60); // 0
+    // A start so late a 1h box would spill past 24:00 clamps to 23:00.
+    expect(minutesOfDay(withStartMinute(iv(9, 0, 10, 0), 24 * 60).start)).toBe(HOUR_END * 60 - 60); // 1380
   });
-  it("withEndMinute enforces a minimum duration and the band end", () => {
+  it("withEndMinute enforces a minimum duration and clamps the end to 24:00", () => {
     const shrunk = withEndMinute(iv(9, 0, 10, 0), 9 * 60 + 5); // below MIN_BOX_MIN
     expect(minutesOfDay(shrunk.end)).toBe(9 * 60 + MIN_BOX_MIN);
-    expect(minutesOfDay(withEndMinute(iv(9, 0, 10, 0), 30 * 60).end)).toBe(HOUR_END * 60);
+    // An end past 24:00 clamps to the day end — represented as next midnight.
+    const capped = withEndMinute(iv(9, 0, 10, 0), 30 * 60).end;
+    expect(capped.getTime()).toBe(new Date(2026, 6, 7).getTime()); // 24:00 = next midnight
   });
   it("movedTimebox shifts start by a snapped pixel delta", () => {
     // +60px at 0.9px/min = ~66min → snaps to 60 → 10:00 start.
@@ -162,11 +183,24 @@ describe("timebox mutation", () => {
     expect(minutesOfDay(resized.end)).toBe(10 * 60 + 30);
     expect(minutesOfDay(resized.start)).toBe(9 * 60); // start unchanged
   });
-  it("withStartMinuteKeepEnd enforces a minimum duration and the band start", () => {
+  it("withStartMinuteKeepEnd enforces a minimum duration and the day start", () => {
     const shrunk = withStartMinuteKeepEnd(iv(9, 0, 10, 0), 9 * 60 + 55); // above end - MIN_BOX_MIN
     expect(minutesOfDay(shrunk.start)).toBe(10 * 60 - MIN_BOX_MIN);
-    expect(minutesOfDay(withStartMinuteKeepEnd(iv(9, 0, 10, 0), 0).start)).toBe(HOUR_START * 60);
+    // A start before 00:00 clamps to the top of the day.
+    expect(minutesOfDay(withStartMinuteKeepEnd(iv(9, 0, 10, 0), -60).start)).toBe(HOUR_START * 60); // 0
     expect(minutesOfDay(shrunk.end)).toBe(10 * 60); // end unchanged
+  });
+  it("keeps min-duration timeboxes honored at the day edges", () => {
+    // Top edge pinned against 00:00: a default box dropped at the top stays put.
+    expect(minutesOfDay(withStartMinute(iv(0, 0, 1, 0), -30).start)).toBe(HOUR_START * 60); // 0
+    // Resizing the top edge up past 00:00 clamps the start but keeps >= MIN.
+    const top = withStartMinuteKeepEnd(iv(0, 0, 0, 30), -60); // end 00:30
+    expect(minutesOfDay(top.start)).toBe(HOUR_START * 60); // 0
+    expect(minutesOfDay(top.end) - minutesOfDay(top.start)).toBeGreaterThanOrEqual(MIN_BOX_MIN);
+    // Bottom edge against 24:00: shrinking a 23:50 box below MIN still yields a
+    // MIN_BOX_MIN duration (its end tips just past midnight).
+    const bottom = withEndMinute(iv(23, 50, 23, 55), 23 * 60 + 52);
+    expect(bottom.end.getTime() - bottom.start.getTime()).toBe(MIN_BOX_MIN * 60_000);
   });
   it("resizedTimeboxStart moves the start by a snapped pixel delta, preserving the end", () => {
     // -27px at 0.9px/min = -30min → 8:30 start (snap 15).

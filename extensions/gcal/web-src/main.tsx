@@ -5,7 +5,7 @@
 // the dropped time; placed timeboxes can then be moved, resized, keyboard-
 // nudged, or cleared. Default-exports the TaskdExtension the host imports.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { ExtensionAPI, Task, TaskdExtension } from "@taskd/extension-api";
 import { makeCalendarPresenter } from "./presenter";
@@ -30,6 +30,7 @@ import {
   loadView,
   loadZoom,
   minuteToY,
+  minutesOfDay,
   sameDay,
   saveView,
   saveZoom,
@@ -166,6 +167,29 @@ function DayRail({ api }: { api: ExtensionAPI }) {
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
+  // The full-day grid overflows the panel, so choose a sensible initial scroll:
+  // when today is in view, park "now" ~a third down the viewport; otherwise put
+  // 08:00 at the top. This fires on mount and whenever the user jumps back to
+  // today (scrollSignal bumps) — deliberately NOT on prev/next navigation (the
+  // container is not remounted, so the browser preserves scrollTop) nor on zoom
+  // (which keeps its own browser-preserved anchor). `now`/`zoom`/`isTodayInView`
+  // are read fresh from the closure but intentionally omitted from the deps so a
+  // minute tick or a zoom step never yanks the view.
+  const [scrollSignal, setScrollSignal] = useState(0);
+  const jumpToToday = () => {
+    setOffset(0);
+    setScrollSignal((s) => s + 1);
+  };
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const y = isTodayInView
+      ? minuteToY(minutesOfDay(now), zoom) - el.clientHeight / 3
+      : minuteToY(8 * 60, zoom);
+    el.scrollTop = Math.max(0, y);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollSignal]);
+
   const step = spanFor(mode);
   const focusDay = (day: Date) => {
     setMode("day");
@@ -283,7 +307,7 @@ function DayRail({ api }: { api: ExtensionAPI }) {
         </div>
         {!isTodayInView && (
           <button
-            onClick={() => setOffset(0)}
+            onClick={jumpToToday}
             title="Back to today"
             style={{
               flexShrink: 0,
@@ -306,6 +330,7 @@ function DayRail({ api }: { api: ExtensionAPI }) {
       {/* Scrolling timeline: (per-day headers) + all-day strip + hour body */}
       <div
         ref={scrollRef}
+        data-testid="cal-scroll"
         style={{
           flex: 1,
           minHeight: 0,
