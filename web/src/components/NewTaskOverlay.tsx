@@ -1,8 +1,10 @@
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSnapshot, useStore } from "../lib/hooks";
-import { parseQuickAdd } from "../lib/quickadd";
+import { parseQuickAdd, tokenSpans, type TokenKind, type TokenSpan } from "../lib/quickadd";
 import { registry, useRegistry } from "../lib/extensions";
 import { chipParts, humanDue } from "../lib/format";
+import { humanize } from "../lib/recur";
 import { Chip } from "./Chip";
 import { Popover, PillButton } from "./Popover";
 import { ScheduleMenu, PriorityMenu, LabelMenu, ProjectMenu } from "./pickers";
@@ -17,6 +19,41 @@ type Override<T> = T | undefined; // undefined = inherit from the parsed title
 
 const PRIORITY_RE = /^p[1-3]$/;
 const isProject = (l: string) => l.startsWith("project:");
+
+// Shared between the (invisible) textarea and the highlight div behind it —
+// any mismatch here and the two texts stop lining up.
+const TITLE_TEXT_CLASS = "text-[19px] font-semibold leading-tight";
+
+const TOKEN_CLASS: Record<TokenKind, string> = {
+  label: "rounded-sm bg-accent/15 text-accent",
+  priority: "rounded-sm bg-accent/15 text-accent",
+  due: "rounded-sm bg-warn/15 text-warn",
+  ext: "rounded-sm bg-accent/15 text-accent",
+  recur: "rounded-sm bg-warn/15 text-warn",
+};
+
+// Todoist-style live formatting: recognized quick-add tokens get a tinted
+// background as you type. Renders into a div stacked behind a text-transparent
+// textarea (the classic contenteditable-highlight trick — the real textarea
+// stays the actual input/caret/selection, this is purely decorative).
+function renderHighlighted(text: string, spans: TokenSpan[]): ReactNode {
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  spans.forEach((s, i) => {
+    if (s.start > cursor) nodes.push(text.slice(cursor, s.start));
+    nodes.push(
+      <span key={i} data-testid="quickadd-token" data-kind={s.kind} className={TOKEN_CLASS[s.kind]}>
+        {text.slice(s.start, s.end)}
+      </span>,
+    );
+    cursor = s.end;
+  });
+  nodes.push(text.slice(cursor));
+  // A trailing newline collapses to nothing in a plain <div>; a textarea
+  // still reserves the blank line for it. A zero-width space preserves it.
+  if (text.endsWith("\n")) nodes.push("​");
+  return nodes;
+}
 
 // Grow a textarea to fit its content (wrapped lines + explicit newlines). The
 // CSS caps the height, so past the cap it scrolls instead of pushing the modal.
@@ -45,17 +82,35 @@ export function NewTaskOverlay({
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [dueOv, setDueOv] = useState<Override<Date | null>>(initial?.due ?? undefined);
+  // Seed the due override as "inherit" (undefined), NOT from initial.due — a
+  // view-derived default (e.g. Today prefills today's date) must NOT beat a
+  // date typed into the title. Precedence: explicit chip interaction (pick /
+  // clear ×) > typed date token > view default (see `due` below).
+  const [dueOv, setDueOv] = useState<Override<Date | null>>(undefined);
+  // Recurrence comes only from a typed phrase ("every 3 days", "daily"); the
+  // chip's × is the sole override (clear), so the only override value is null.
+  const [recurOv, setRecurOv] = useState<Override<null>>(undefined);
   const [prioOv, setPrioOv] = useState<Override<string | null>>(undefined);
   const [labelsOv, setLabelsOv] = useState<Override<string[]>>(undefined);
   const [projectOv, setProjectOv] = useState<Override<string | null>>(initial?.project ?? undefined);
-  const [keepOpen, setKeepOpen] = useState(false);
   const titleRef = useRef<HTMLTextAreaElement>(null);
+  const titleWrapRef = useRef<HTMLDivElement>(null);
   const descRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => titleRef.current?.focus(), []);
   // Keep both fields sized to their content as the user types or on reset.
-  useEffect(() => autoGrow(titleRef.current), [title]);
+  useEffect(() => {
+    autoGrow(titleRef.current);
+    // The highlight div behind the textarea is `absolute inset-0` so it can
+    // stack under it exactly — but its wrapper's height is otherwise "auto",
+    // and an absolutely positioned child of an auto-height parent resolves
+    // circularly (Chromium falls back to the child's own content height,
+    // which can differ from the textarea's by a few px). Pinning the
+    // wrapper's height to the textarea's own resolved height breaks the tie.
+    if (titleWrapRef.current && titleRef.current) {
+      titleWrapRef.current.style.height = titleRef.current.style.height;
+    }
+  }, [title]);
   useEffect(() => autoGrow(descRef.current), [description]);
 
   const regVersion = useRegistry(); // pick up extension-contributed quick-add tokens
@@ -64,11 +119,17 @@ export function NewTaskOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [title, now, regVersion],
   );
+  const spans = useMemo(
+    () => tokenSpans(title, now, registry.quickAddTokens),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [title, now, regVersion],
+  );
   const parsedPriority = parsed.labels.find((l) => PRIORITY_RE.test(l)) ?? null;
   const parsedProject = parsed.labels.find(isProject) ?? null;
   const parsedLabels = parsed.labels.filter((l) => !PRIORITY_RE.test(l) && !isProject(l));
 
-  const due = dueOv !== undefined ? dueOv : parsed.due ?? null;
+  const due = dueOv !== undefined ? dueOv : parsed.due ?? initial?.due ?? null;
+  const recurrence = recurOv !== undefined ? recurOv : parsed.recurrence ?? null;
   const priority = prioOv !== undefined ? prioOv : parsedPriority;
   const labels = labelsOv !== undefined ? labelsOv : parsedLabels;
   const project = projectOv !== undefined ? projectOv : parsedProject;
@@ -96,17 +157,10 @@ export function NewTaskOverlay({
         notes: description.trim() || undefined,
         labels: finalLabels,
         due: due ?? undefined,
+        recurrence: recurrence ?? undefined,
       })
       .catch(() => {});
-    if (keepOpen) {
-      setTitle("");
-      setDescription("");
-      setLabelsOv(undefined);
-      setPrioOv(undefined);
-      titleRef.current?.focus();
-    } else {
-      onClose();
-    }
+    onClose();
   };
 
   return (
@@ -126,21 +180,31 @@ export function NewTaskOverlay({
         }}
       >
         <div className="p-4">
-          <textarea
-            ref={titleRef}
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            rows={1}
-            placeholder="Task name"
-            aria-label="Task name"
-            className="max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent text-[19px] font-semibold leading-tight placeholder:text-faint focus:outline-none"
-          />
+          <div ref={titleWrapRef} className="relative">
+            {/* Decorative twin behind the textarea — same text, same box, tokens
+                tinted. aria-hidden since the textarea already carries the value. */}
+            <div
+              aria-hidden
+              className={`pointer-events-none absolute inset-0 max-h-[40vh] overflow-hidden whitespace-pre-wrap break-words ${TITLE_TEXT_CLASS} text-ink`}
+            >
+              {renderHighlighted(title, spans)}
+            </div>
+            <textarea
+              ref={titleRef}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+              rows={1}
+              placeholder="Task name"
+              aria-label="Task name"
+              className={`relative max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent ${TITLE_TEXT_CLASS} text-transparent caret-ink placeholder:text-faint focus:outline-none`}
+            />
+          </div>
           <textarea
             ref={descRef}
             value={description}
@@ -156,7 +220,7 @@ export function NewTaskOverlay({
               trigger={({ toggle }) => (
                 <PillButton
                   icon={<Icon name="calendar" size={14} />}
-                  label={due ? humanDue(due, now).text : "Schedule"}
+                  label={due ? humanDue(due, now, { withTime: true }).text : "Schedule"}
                   active={!!due}
                   onClick={toggle}
                   onClear={due ? () => setDueOv(null) : undefined}
@@ -165,6 +229,21 @@ export function NewTaskOverlay({
             >
               {(close) => <ScheduleMenu now={now} onChange={(d) => setDueOv(d)} close={close} />}
             </Popover>
+
+            {/* Recurrence chip — appears when a typed phrase set a rule. There
+                is no picker (the natural grammar IS the input); × clears it. */}
+            {recurrence && (
+              <span data-testid="recurrence-chip">
+                <PillButton
+                  icon={<Icon name="repeat" size={13} />}
+                  label={humanize(recurrence)}
+                  active
+                  tone="warn"
+                  onClick={() => {}}
+                  onClear={() => setRecurOv(null)}
+                />
+              </span>
+            )}
 
             <Popover
               trigger={({ toggle }) => (
@@ -229,10 +308,6 @@ export function NewTaskOverlay({
           </Popover>
 
           <div className="flex items-center gap-2">
-            <label className="mr-1 hidden cursor-pointer select-none items-center gap-1 font-mono text-[11px] text-faint sm:flex">
-              <input type="checkbox" checked={keepOpen} onChange={(e) => setKeepOpen(e.target.checked)} />
-              add more
-            </label>
             <button
               onClick={onClose}
               className="rounded-md bg-ink/[.06] px-3 py-1.5 text-[13px] font-medium text-ink hover:bg-ink/[.1] dark:bg-ink/[.1] dark:hover:bg-ink/[.16]"

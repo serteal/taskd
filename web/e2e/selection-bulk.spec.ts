@@ -48,4 +48,21 @@ test.describe("multi-select & bulk actions", () => {
     await expect(row(page, "C")).toBeVisible();
     await expect(toast(page, "Deleted 2 tasks")).toBeVisible();
   });
+
+  test("bulk Label adds a label to every selected task", async ({ page, api }) => {
+    await pick(page, "A", ["ControlOrMeta"]);
+    await pick(page, "B", ["ControlOrMeta"]);
+
+    const bar = page.getByTestId("bulk-bar");
+    await bar.getByRole("button", { name: "Label", exact: true }).click();
+    const input = page.getByPlaceholder("Type a label…");
+    await input.fill("triaged");
+    await input.press("Enter");
+
+    await expect(toast(page, "Labeled 2 tasks")).toBeVisible();
+    const active = await api.listActive();
+    expect(active.find((t) => t.title === "A")?.labels).toContain("triaged");
+    expect(active.find((t) => t.title === "B")?.labels).toContain("triaged");
+    expect(active.find((t) => t.title === "C")?.labels ?? []).not.toContain("triaged");
+  });
 });

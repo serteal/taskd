@@ -34,5 +34,21 @@ export default {
       hint: "urgent",
       match: (tok) => (tok === "urgent" ? { labels: ["urgent"] } : null),
     });
+    api.registerTheme({
+      id: "testext-theme",
+      label: "Testext Theme",
+      group: "Testext",
+      mode: "dark",
+      vars: {
+        bg: "#0a0a0a",
+        surface: "#141414",
+        ink: "#f5f5f5",
+        muted: "#999999",
+        faint: "#666666",
+        line: "#2a2a2a",
+        accent: "#ff6600",
+        warn: "#ff2222",
+      },
+    });
   },
 };

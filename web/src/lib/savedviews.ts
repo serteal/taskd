@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { View, SortMode } from "./views";
+import { onStorageChange, readVersionedJSON, writeVersionedJSON } from "./storage";
 
 // Named view presets pinned to the sidebar — a saved combination of the
 // filter (View), sort, board mode, and group-by. Client-only (localStorage),
@@ -15,21 +16,28 @@ export interface SavedView {
 }
 
 const KEY = "taskd-saved-views";
+const VERSION = 1;
 
 function load(): SavedView[] {
-  try {
-    const raw = localStorage.getItem(KEY);
-    // Older entries may still carry a now-removed `search` field; JSON.parse
-    // keeps it as an ignored extra property, so they load without a migration.
-    return raw ? (JSON.parse(raw) as SavedView[]) : [];
-  } catch {
-    return [];
-  }
+  // A pre-envelope raw array (existing users) is read back unchanged and
+  // rewritten enveloped on first load. Older entries may still carry a
+  // now-removed `search` field; it's kept as an ignored extra property.
+  return readVersionedJSON<SavedView[]>(KEY, { version: VERSION }) ?? [];
 }
 
 class SavedViewStore {
   private items: SavedView[] = load();
   private listeners = new Set<() => void>();
+
+  constructor() {
+    // Another tab/window wrote our key: reload from storage and re-emit, so
+    // both documents converge — and our NEXT whole-array persist builds on
+    // their edit instead of clobbering it with a stale in-memory copy.
+    onStorageChange(KEY, () => {
+      this.items = load();
+      for (const fn of this.listeners) fn();
+    });
+  }
 
   subscribe = (fn: () => void): (() => void) => {
     this.listeners.add(fn);
@@ -50,11 +58,7 @@ class SavedViewStore {
   }
 
   private persist(): void {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(this.items));
-    } catch {
-      // storage full/blocked — the in-memory list still works this session
-    }
+    writeVersionedJSON(KEY, VERSION, this.items); // storage errors swallowed inside
     for (const fn of this.listeners) fn();
   }
 }

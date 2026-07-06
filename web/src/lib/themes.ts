@@ -282,12 +282,11 @@ export const THEME_GROUPS: ThemeGroup[] = (() => {
   return order.map((name) => ({ name, themes: byGroup.get(name)! }));
 })();
 
-/** Apply a theme to <html>: inline CSS vars + `.dark` class + `data-theme`.
- *  Idempotent and safe to call before React mounts. Returns the resolved
- *  theme (falls back to paper for an unknown id). */
-export function applyTheme(id: string): Theme {
-  const theme = THEME_BY_ID[id] ?? THEME_BY_ID[DEFAULT_LIGHT];
-  if (typeof document === "undefined") return theme;
+/** Apply a resolved theme to <html>: inline CSS vars + `.dark` class +
+ *  `data-theme`. The pure primitive — works for any Theme, built-in or
+ *  extension-contributed, since it never looks the id up itself. */
+export function applyThemeVars(theme: Theme): void {
+  if (typeof document === "undefined") return;
   const root = document.documentElement;
   const s = root.style;
   const v = theme.vars;
@@ -301,25 +300,41 @@ export function applyTheme(id: string): Theme {
   s.setProperty("--warn", v.warn);
   root.classList.toggle("dark", theme.mode === "dark");
   root.dataset.theme = theme.id;
+}
+
+/** Apply a built-in theme by id. Idempotent and safe to call before React
+ *  mounts (main.tsx's first-paint call, before extensions have had a chance
+ *  to register their own). Falls back to paper for an unknown id — an
+ *  extension-contributed id isn't resolvable yet at that point; hooks.ts
+ *  re-applies it once the extension registers (see readSavedThemeId). */
+export function applyTheme(id: string): Theme {
+  const theme = THEME_BY_ID[id] ?? THEME_BY_ID[DEFAULT_LIGHT];
+  applyThemeVars(theme);
   return theme;
 }
 
-/** The theme to use on first load: the saved id, migrating the legacy
- *  boolean/"light"/"dark" values of the same localStorage key, else the id
- *  matching `prefers-color-scheme`. */
-export function resolveInitialThemeId(): string {
+/** The raw saved theme id, migrating the legacy boolean/"light"/"dark"
+ *  values of the same localStorage key. Unlike resolveInitialThemeId, this
+ *  does not validate against the built-in catalog or fall back to system
+ *  preference — it may name an extension theme that hasn't registered yet. */
+export function readSavedThemeId(): string | null {
   let saved: string | null = null;
   try {
     saved = localStorage.getItem(STORAGE_KEY);
   } catch {
     /* storage unavailable */
   }
-  if (saved) {
-    // Legacy values from the old binary toggle.
-    if (saved === "light" || saved === "false") return DEFAULT_LIGHT;
-    if (saved === "dark" || saved === "true") return DEFAULT_DARK;
-    if (Object.prototype.hasOwnProperty.call(THEME_BY_ID, saved)) return saved;
-  }
+  if (!saved) return null;
+  if (saved === "light" || saved === "false") return DEFAULT_LIGHT;
+  if (saved === "dark" || saved === "true") return DEFAULT_DARK;
+  return saved;
+}
+
+/** The theme to use on first load: the saved id if it's a known built-in,
+ *  else the id matching `prefers-color-scheme`. */
+export function resolveInitialThemeId(): string {
+  const saved = readSavedThemeId();
+  if (saved && Object.prototype.hasOwnProperty.call(THEME_BY_ID, saved)) return saved;
   let prefersDark = false;
   try {
     prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;

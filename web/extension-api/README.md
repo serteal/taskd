@@ -25,6 +25,11 @@ Inside `register(api)`:
   add an entry to the ⌘K command palette.
 - **`api.registerQuickAddToken({ match, hint? })`** — interpret a word in the
   new-task field, e.g. `match: t => t === "noon" ? { due: todayNoon } : null`.
+- **`api.registerTheme({ id, label, group, mode, vars })`** — contribute a
+  theme to Settings' theme picker. It shows alongside the built-in catalog,
+  grouped under `group` (e.g. your extension's name); `mode` is `"light"` or
+  `"dark"` and `vars` sets the eight theme CSS variables
+  (`bg surface ink muted faint line accent warn`).
 - **`api.hooks.useTasks()` / `useNow()`** — the live task replica and a slow
   clock, as React hooks, for use in your components.
 - **`api.getTasks()`** — a one-shot snapshot of active tasks for imperative
@@ -38,6 +43,14 @@ Inside `register(api)`:
 - **`api.store.create/update/delete`** — optimistic mutations. To write your
   own structured data, use `user_data` (user-owned, never touched by sync):
   `api.store.update(id, { userData: { ...task.userData, mine: {...} } })`.
+  The host enforces the `TaskPatch` field-ownership contract on `update` at
+  runtime: patch keys outside `TaskPatch` — host-managed structure like
+  `recurrence`/`parent_id` — are dropped with a one-time console warning, and
+  `completed: true` on a *synced* task is stripped (its completion follows the
+  source). `update` resolves to `void`; the write's result payload is **not**
+  part of the contract, so don't rely on a returned value. For anything beyond
+  this curated surface, **`api.client`** (the full generated `TaskService`
+  client) remains the documented full-access escape hatch.
 - **`api.ui.openTask(id)`** — open the host detail panel.
 - **`api.dnd`** — drag bridge. Core task rows are drag sources; a panel that
   accepts them handles `onDragOver` (`preventDefault`) + `onDrop` and reads
@@ -65,6 +78,27 @@ Rules:
   (`--bg --surface --ink --muted --faint --line --accent --warn`) and fonts
   (`"IBM Plex Sans"`, `"IBM Plex Mono"`). Tailwind classes are **not** part
   of the contract — the core bundle only contains the classes it uses.
+
+### Dev loop
+
+There is no HMR — you rebuild and reload. Run the bundler in watch mode so it
+re-emits `web/main.js` on every change:
+
+```sh
+node extensions/build-web.mjs extensions/<name> --watch
+```
+
+Rather than reinstalling into `~/.taskd/extensions/` after each edit, serve that
+`web/main.js` from any static dev server and load it *on top of* the installed
+extensions with the `?ext-dev=<url>` query param:
+
+```
+http://127.0.0.1:8888/?ext-dev=<url-to-your-dev-main.js>
+```
+
+The app loads every daemon-served bundle plus your dev URL, so your
+in-progress extension's `register(api)` runs alongside the rest; reload the
+page after each rebuild to pick up the change.
 
 ## Minimal example
 

@@ -78,7 +78,14 @@ function fixture(initial: Task[] = []): Fixture {
       },
       createTask(req) {
         calls.push("createTask");
-        const t = mkTask({ id: `srv-${serverTasks.size + 1}`, title: req.title, labels: req.labels, dueTime: req.dueTime });
+        const t = mkTask({
+          id: `srv-${serverTasks.size + 1}`,
+          title: req.title,
+          labels: req.labels,
+          dueTime: req.dueTime,
+          recurrence: req.recurrence,
+          parentId: req.parentId,
+        });
         serverTasks.set(t.id, t);
         return { task: t };
       },
@@ -89,13 +96,34 @@ function fixture(initial: Task[] = []): Fixture {
         if (req.expectedRevision !== 0n && req.expectedRevision !== cur.revision) {
           throw new ConnectError("revision mismatch", Code.Aborted);
         }
+        const paths = req.updateMask?.paths ?? [];
+        // Recurring roll-forward, the way the real server behaves: completing
+        // a recurring task archives a frozen copy and advances the live task's
+        // due instead of completing it.
+        if (paths.includes("completed_time") && req.task?.completedTime && cur.recurrence !== "") {
+          const spawned = mkTask({
+            id: `${req.id}-arch`,
+            title: cur.title,
+            completedTime: req.task.completedTime,
+          });
+          const next = {
+            ...cur,
+            revision: cur.revision + 1n,
+            dueTime: timestampFromDate(new Date(Date.now() + 86_400_000)),
+          };
+          serverTasks.set(req.id, next);
+          serverTasks.set(spawned.id, spawned);
+          return { task: next, spawnedOccurrence: spawned };
+        }
         const next = { ...cur, revision: cur.revision + 1n };
-        for (const p of req.updateMask?.paths ?? []) {
+        for (const p of paths) {
           if (p === "title") next.title = req.task?.title ?? "";
           if (p === "labels") next.labels = req.task?.labels ?? [];
           if (p === "completed_time") next.completedTime = req.task?.completedTime;
           if (p === "due_time") next.dueTime = req.task?.dueTime;
           if (p === "notes") next.notes = req.task?.notes ?? "";
+          if (p === "recurrence") next.recurrence = req.task?.recurrence ?? "";
+          if (p === "parent_id") next.parentId = req.task?.parentId ?? "";
         }
         serverTasks.set(req.id, next);
         return { task: next };
@@ -257,12 +285,92 @@ describe("TaskStore", () => {
     }
   });
 
+  it("everConnected turns true on the first handshake and survives a drop", async () => {
+    const f = fixture([mkTask({ id: "a" })]);
+    try {
+      // Cold start: neither connected nor everConnected — the UI's grace
+      // window keys on this to avoid flashing "can't reach the daemon".
+      expect(f.store.getSnapshot().connected).toBe(false);
+      expect(f.store.getSnapshot().everConnected).toBe(false);
+
+      await f.started;
+      expect(f.store.getSnapshot().everConnected).toBe(true);
+
+      // A dropped stream flips connected off but everConnected STAYS true —
+      // that's what identifies a real drop vs a cold load.
+      f.queue.close();
+      await waitFor(f.store, (s) => !s.connected);
+      expect(f.store.getSnapshot().everConnected).toBe(true);
+    } finally {
+      f.stop();
+    }
+  });
+
   it("completing a task removes it from the active replica", async () => {
     const f = fixture([mkTask({ id: "a", revision: 1n })]);
     try {
       await f.started;
       await f.store.update("a", { completed: true });
       expect(f.store.getSnapshot().tasks.has("a")).toBe(false);
+    } finally {
+      f.stop();
+    }
+  });
+
+  it("completing a RECURRING task is NOT optimistic and applies the advanced live task", async () => {
+    const originalDue = timestampFromDate(new Date(2026, 6, 6));
+    const f = fixture([
+      mkTask({ id: "r", revision: 1n, recurrence: "FREQ=DAILY", dueTime: originalDue }),
+    ]);
+    try {
+      await f.started;
+      const p = f.store.update("r", { completed: true });
+
+      // No optimistic apply: before the RPC resolves the replica still holds
+      // the task unchanged — present, active, with the ORIGINAL due (the
+      // client can't compute the next occurrence).
+      const before = f.store.getSnapshot().tasks.get("r");
+      expect(before).toBeDefined();
+      expect(before!.completedTime).toBeUndefined();
+      expect(before!.dueTime).toEqual(originalDue);
+      expect(before!.revision).toBe(1n);
+
+      // The awaited result carries the advanced live task + the archive copy.
+      const res = await p;
+      expect(res.spawnedOccurrence?.id).toBe("r-arch");
+      expect(res.task?.revision).toBe(2n);
+
+      // The live task landed immediately: still active, due advanced.
+      const after = f.store.getSnapshot().tasks.get("r");
+      expect(after).toBeDefined();
+      expect(after!.completedTime).toBeUndefined();
+      expect(after!.dueTime).not.toEqual(originalDue);
+      expect(after!.revision).toBe(2n);
+    } finally {
+      f.stop();
+    }
+  });
+
+  it("update returns an empty result for a plain (non-roll-forward) write", async () => {
+    const f = fixture([mkTask({ id: "a", revision: 1n })]);
+    try {
+      await f.started;
+      const res = await f.store.update("a", { title: "renamed" });
+      expect(res.task?.title).toBe("renamed");
+      expect(res.spawnedOccurrence).toBeUndefined();
+    } finally {
+      f.stop();
+    }
+  });
+
+  it("create passes recurrence and parentId through to the server", async () => {
+    const f = fixture([]);
+    try {
+      await f.started;
+      const t = await f.store.create({ title: "sub", recurrence: "FREQ=DAILY", parentId: "p1" });
+      const stored = f.serverTasks.get(t.id)!;
+      expect(stored.recurrence).toBe("FREQ=DAILY");
+      expect(stored.parentId).toBe("p1");
     } finally {
       f.stop();
     }

@@ -39,15 +39,17 @@ test.describe("complete & delete", () => {
     expect(await api.listActive()).toHaveLength(0);
   });
 
-  test("detail panel delete confirms then removes", async ({ page, api }) => {
+  test("detail panel delete removes the task with an undo toast (no confirm)", async ({ page, api }) => {
     await seed(api, [{ title: "Task A" }]);
     await expect(rows(page)).toHaveCount(1);
-    page.on("dialog", (d) => d.accept()); // accept the confirm()
+    // Delete now routes through deleteTaskWithUndo — an optimistic delete with
+    // an Undo toast, not a native confirm(). No dialog listener needed.
 
     await page.getByText("Task A", { exact: true }).click();
     await page.getByRole("button", { name: "Delete", exact: true }).click();
 
     await expect(rows(page)).toHaveCount(0);
+    await expect(toast(page, "Deleted")).toBeVisible();
     expect(await api.listActive()).toHaveLength(0);
   });
 });

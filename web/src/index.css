@@ -64,6 +64,30 @@ body {
   border-radius: 4px;
 }
 
+/* Scrollbars follow the active theme instead of the OS default, referencing
+   the same vars every named theme (light/dark/extension-contributed) sets —
+   no per-theme scrollbar plumbing needed. */
+* {
+  scrollbar-color: var(--line) transparent;
+  scrollbar-width: thin;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--line);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted);
+}
+
 /* A row that just changed from outside this client (syncer, CLI, another
    window) announces itself once, then goes quiet. */
 @keyframes pulse-row {

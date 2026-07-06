@@ -5,6 +5,7 @@ import {
   endOfDay,
   fmtStamp,
   humanDue,
+  isEndOfDay,
   shortId,
   startOfDay,
   toLocalInput,
@@ -45,6 +46,23 @@ describe("humanDue", () => {
   it("uses weekday for this-week and a date for later", () => {
     expect(humanDue(at(2026, 7, 9, 9), now).tone).toBe("soon"); // within 7d
     expect(humanDue(at(2026, 8, 20, 9), now).tone).toBe("later"); // > 7d
+  });
+
+  it("withTime appends the clock only for a due that carries a time-of-day", () => {
+    // An end-of-day due is a plain date — no time shown even with withTime.
+    expect(humanDue(endOfDay(at(2026, 7, 7, 9)), now, { withTime: true }).text).toBe("tomorrow");
+    // A timed due shows HH:MM (zero-padded).
+    expect(humanDue(at(2026, 7, 7, 9, 5), now, { withTime: true }).text).toBe("tomorrow 09:05");
+    // Default (no opts) never appends, preserving every existing call site.
+    expect(humanDue(at(2026, 7, 7, 9, 5), now).text).toBe("tomorrow");
+  });
+});
+
+describe("isEndOfDay", () => {
+  it("is true only at the 23:59:59 end-of-day marker", () => {
+    expect(isEndOfDay(endOfDay(at(2026, 7, 6)))).toBe(true);
+    expect(isEndOfDay(at(2026, 7, 6, 23, 59))).toBe(false); // seconds not 59
+    expect(isEndOfDay(at(2026, 7, 6, 9, 0))).toBe(false);
   });
 });
 

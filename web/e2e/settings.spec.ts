@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect, daysFromNow, FIXED_NOW } from "./fixtures";
 import { runCommand } from "./helpers";
 
 // The Settings overlay wires up two earlier-wave features: the full theme
@@ -11,12 +11,36 @@ test.describe("settings", () => {
     await page.getByTestId("open-settings").click();
     const panel = page.getByTestId("settings");
     await expect(panel).toBeVisible();
-    await expect(panel).toContainText("Appearance");
+    await expect(panel).toContainText("Startup view");
+    await expect(panel).toContainText("Notifications");
     await expect(panel).toContainText("Extensions");
+    await expect(panel).toContainText("Appearance");
     await expect(panel).toContainText("About");
+
+    // Functional settings lead; the theme catalog (Appearance) is demoted to
+    // just above About so it no longer buries them.
+    const order = await panel
+      .locator("section[data-testid]")
+      .evaluateAll((els) => els.map((e) => e.getAttribute("data-testid")));
+    expect(order).toEqual([
+      "settings-general",
+      "settings-notifications",
+      "settings-extensions",
+      "settings-appearance",
+      "settings-about",
+    ]);
 
     await page.keyboard.press("Escape");
     await expect(panel).toBeHidden();
+  });
+
+  test("About shows the daemon version and address", async ({ page }) => {
+    await page.getByTestId("open-settings").click();
+    // A dev build reports "dev"; a stamped build reports "v<git describe>",
+    // which can carry hyphens ("v0.1.0-3-gabc123", "v2bd8777-dirty"). Either
+    // way the About line carries a non-empty version string.
+    await expect(page.getByTestId("app-version")).toHaveText(/^(dev|v[\w.-]+)$/);
+    await expect(page.getByTestId("daemon-address")).toContainText("127.0.0.1");
   });
 
   test("opens from the ⌘K command", async ({ page }) => {
@@ -58,6 +82,123 @@ test.describe("settings", () => {
     await page.getByTestId("open-settings").click();
     await expect(page.getByTestId("settings-extensions")).toContainText("No extensions installed");
   });
+
+  test("the startup view picker changes which view a bare load opens to", async ({ page, daemon }) => {
+    await page.getByTestId("open-settings").click();
+    const inbox = page.locator('[data-testid="default-view-option"][data-view="inbox"]');
+    const today = page.locator('[data-testid="default-view-option"][data-view="today"]');
+    await expect(today).toHaveAttribute("aria-pressed", "true"); // default
+    await expect(inbox).toHaveAttribute("aria-pressed", "false");
+
+    await inbox.click();
+    await expect(inbox).toHaveAttribute("aria-pressed", "true");
+    await expect(today).toHaveAttribute("aria-pressed", "false");
+
+    // A bare load (no ?view= at all — unlike the fixture's own navigation,
+    // which always passes view=all) now opens to Inbox instead of Today.
+    await page.goto(`${daemon.baseURL}/?test=1`);
+    await expect(page.locator('[data-testid="conn-status"][data-connected="true"]')).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
+  });
+});
+
+test.describe("due-task reminders", () => {
+  // Replace the real Notification API with an in-page spy so enabling the
+  // toggle and a task becoming due can be asserted without a real OS
+  // permission prompt or native notification. addInitScript only affects
+  // navigations that happen AFTER it's registered, and the `page` fixture has
+  // already loaded the app by the time this runs — so reload once to apply it.
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      (window as unknown as { __notifications: unknown[] }).__notifications = [];
+      class FakeNotification {
+        static permission: NotificationPermission = "default";
+        static requestPermission(): Promise<NotificationPermission> {
+          FakeNotification.permission = "granted";
+          return Promise.resolve("granted");
+        }
+        constructor(title: string, options?: NotificationOptions) {
+          (window as unknown as { __notifications: unknown[] }).__notifications.push({
+            title,
+            body: options?.body,
+          });
+        }
+      }
+      // @ts-expect-error -- test stub, not a full Notification implementation
+      window.Notification = FakeNotification;
+    });
+    await page.reload();
+    await expect(page.locator('[data-testid="conn-status"][data-connected="true"]')).toBeVisible();
+  });
+
+  test("enabling requests permission and the choice persists across a reload", async ({ page }) => {
+    await page.getByTestId("open-settings").click();
+    const toggle = page.getByTestId("notify-due-toggle");
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(await page.evaluate(() => Notification.permission)).toBe("granted");
+
+    await page.reload();
+    await expect(page.locator('[data-testid="conn-status"][data-connected="true"]')).toBeVisible();
+    await page.getByTestId("open-settings").click();
+    await expect(page.getByTestId("notify-due-toggle")).toHaveAttribute("aria-checked", "true");
+  });
+
+  test("fires once a task becomes due, but not for tasks already overdue when it's turned on", async ({
+    page,
+    api,
+  }) => {
+    // Already overdue before the feature is enabled — priming should not
+    // notify for this (no backlog storm on opt-in).
+    await api.createTask({ title: "Old overdue thing", due: daysFromNow(-2) });
+
+    await page.getByTestId("open-settings").click();
+    await page.getByTestId("notify-due-toggle").click();
+    await page.keyboard.press("Escape");
+
+    const count = () => page.evaluate(() => (window as unknown as { __notifications: unknown[] }).__notifications.length);
+    expect(await count()).toBe(0);
+
+    // A task created already-overdue AFTER enabling is new to the replica —
+    // it wasn't part of the primed backlog, so it fires immediately.
+    await api.createTask({ title: "Fresh overdue thing", due: daysFromNow(-1) });
+    await expect.poll(count).toBe(1);
+    const n = await page.evaluate(() => (window as unknown as { __notifications: { title: string; body: string }[] }).__notifications[0]);
+    expect(n.title).toBe("Task due");
+    expect(n.body).toBe("Fresh overdue thing");
+  });
+
+  test("on load, summarises tasks that became due while the app was closed", async ({ page, api }) => {
+    // Simulate a prior session: reminders were on, last evaluated two days ago.
+    const twoDaysAgo = FIXED_NOW.getTime() - 2 * 86_400_000;
+    await page.evaluate((wm) => {
+      localStorage.setItem("taskd-notify-due", "1");
+      localStorage.setItem("taskd-reminders-last-seen", String(wm));
+    }, twoDaysAgo);
+
+    // Two local tasks fell due yesterday — inside the (watermark, now] window.
+    await api.createTask({ title: "Missed one", due: daysFromNow(-1) });
+    await api.createTask({ title: "Missed two", due: daysFromNow(-1) });
+
+    await page.reload();
+    await expect(page.locator('[data-testid="conn-status"][data-connected="true"]')).toBeVisible();
+
+    // ONE summary notification, not one-per-task.
+    const count = () =>
+      page.evaluate(() => (window as unknown as { __notifications: unknown[] }).__notifications.length);
+    await expect.poll(count).toBe(1);
+    const n = await page.evaluate(
+      () =>
+        (window as unknown as { __notifications: { title: string; body: string }[] }).__notifications[0],
+    );
+    expect(n.title).toBe("Tasks due");
+    expect(n.body).toBe("2 tasks became due while you were away");
+
+    // …and an on-screen toast says the same.
+    await expect(page.getByText("2 tasks became due while you were away")).toBeVisible();
+  });
 });
 
 test.describe("settings (extensions)", () => {
@@ -72,6 +213,18 @@ test.describe("settings (extensions)", () => {
     await expect(github).toContainText("github");
     await expect(github).toContainText(/syncer/i);
     await expect(github).toContainText(/web/i);
+  });
+
+  test("each extension row lists the sources it currently feeds, with counts", async ({ page }) => {
+    await page.getByTestId("open-settings").click();
+
+    // gcal's mock syncs into source "gcal:personal"; the row derives that from
+    // the live replica and shows an item count.
+    const gcal = page.locator('[data-testid="ext-row"][data-ext="gcal"]');
+    await expect(gcal.getByTestId("ext-sources")).toContainText(/gcal:personal · \d+ item/);
+
+    const github = page.locator('[data-testid="ext-row"][data-ext="github"]');
+    await expect(github.getByTestId("ext-sources")).toContainText(/github · \d+ item/);
   });
 
   test("toggling an extension reflects the new state in the list", async ({ page }) => {

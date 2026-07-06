@@ -101,6 +101,32 @@ export interface QuickAddToken {
   hint?: string;
 }
 
+/** The 8 CSS custom properties a theme sets (see index.css `@theme inline`). */
+export interface ThemeVars {
+  bg: string;
+  surface: string;
+  ink: string;
+  muted: string;
+  faint: string;
+  line: string;
+  accent: string;
+  warn: string;
+}
+
+/**
+ * A theme contributed by an extension — same idea as a panel or presenter,
+ * just for the Settings theme picker rather than a task view. Appears
+ * alongside the built-in catalog, grouped under `group` (e.g. your
+ * extension's name).
+ */
+export interface Theme {
+  id: string;
+  label: string;
+  group: string;
+  mode: "light" | "dark";
+  vars: ThemeVars;
+}
+
 /** Transient toast; `action` renders a button (e.g. Undo). */
 export interface ToastOptions {
   kind?: "info" | "success" | "error";
@@ -130,6 +156,8 @@ export interface ExtensionAPI {
   registerCommand(c: Command): void;
   /** Interpret a quick-add token (e.g. "@home" → a label). */
   registerQuickAddToken(t: QuickAddToken): void;
+  /** Contribute a theme to Settings' picker, grouped under `t.group`. */
+  registerTheme(t: Theme): void;
 
   /** Live replica of ACTIVE tasks — hooks usable in extension components. */
   hooks: {
@@ -146,6 +174,13 @@ export interface ExtensionAPI {
   /** Mutations, optimistic against the replica. */
   store: {
     create(fields: { title: string; notes?: string; labels?: string[]; due?: Date }): Promise<Task>;
+    /**
+     * Apply a patch to a task. Resolves once the write is accepted; the
+     * update's result payload is NOT part of this contract (do not rely on a
+     * value). The host enforces field ownership on the patch: keys outside
+     * TaskPatch are dropped, and `completed: true` on a synced task is ignored
+     * (its completion follows the source).
+     */
     update(id: string, patch: TaskPatch): Promise<void>;
     delete(id: string): Promise<void>;
   };

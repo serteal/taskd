@@ -33,16 +33,44 @@ const FULL_DATE = new Intl.DateTimeFormat(undefined, {
   day: "numeric",
 });
 
-export function humanDue(d: Date, now: Date): { text: string; tone: DueTone } {
+/** True when `d` sits at the "due by end of day" marker endOfDay() writes — i.e.
+ *  a date with no meaningful time-of-day. */
+export function isEndOfDay(d: Date): boolean {
+  return d.getHours() === 23 && d.getMinutes() === 59 && d.getSeconds() === 59;
+}
+
+export function humanDue(
+  d: Date,
+  now: Date,
+  opts?: { withTime?: boolean },
+): { text: string; tone: DueTone } {
   const diff = dayDiff(d, now);
+  let text: string;
+  let tone: DueTone;
   if (diff < 0) {
-    return { text: diff === -1 ? "yesterday" : `${-diff}d ago`, tone: "overdue" };
+    text = diff === -1 ? "yesterday" : `${-diff}d ago`;
+    tone = "overdue";
+  } else if (diff === 0) {
+    text = "today";
+    tone = "today";
+  } else if (diff === 1) {
+    text = "tomorrow";
+    tone = "soon";
+  } else if (diff < 7) {
+    text = WEEKDAY.format(d);
+    tone = "soon";
+  } else {
+    const sameYear = d.getFullYear() === now.getFullYear();
+    text = (sameYear ? MONTH_DAY : FULL_DATE).format(d);
+    tone = "later";
   }
-  if (diff === 0) return { text: "today", tone: "today" };
-  if (diff === 1) return { text: "tomorrow", tone: "soon" };
-  if (diff < 7) return { text: WEEKDAY.format(d), tone: "soon" };
-  const sameYear = d.getFullYear() === now.getFullYear();
-  return { text: (sameYear ? MONTH_DAY : FULL_DATE).format(d), tone: "later" };
+  // Opt-in (the new-task chip): show the clock time for a due that carries one,
+  // e.g. "tomorrow 09:00". An end-of-day due is a plain date and stays bare.
+  if (opts?.withTime && !isEndOfDay(d)) {
+    const p = (n: number) => String(n).padStart(2, "0");
+    text += ` ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+  return { text, tone };
 }
 
 /** Splits a label into its namespace convention parts: "project:home" →

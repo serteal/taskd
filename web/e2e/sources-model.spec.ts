@@ -70,12 +70,48 @@ test.describe("sources ≠ tasks model", () => {
     await expect(page.getByTestId("sidebar-section-filters")).toContainText("GH review");
   });
 
+  test("syncer-applied labels stay out of the sidebar; a label view is local-by-default with a synced escape hatch", async ({
+    page,
+    daemon,
+  }) => {
+    // github's mock applies "bug" to its issues; gcal's applies "calendar".
+    // Neither carries any LOCAL task, so neither may clutter the LABELS section
+    // (they remain reachable via SOURCES and via filters).
+    await expect(page.getByTestId("sidebar-section-sources")).toContainText("github");
+    await expect(page.locator('[data-testid="side-item"][data-label="bug"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="side-item"][data-label="calendar"]')).toHaveCount(0);
+
+    // The label view itself is local-by-default: a bare ?label=bug shows no
+    // rows (every bug-carrier is synced) …
+    await page.goto(`${daemon.baseURL}/?test=1&label=bug`);
+    await expect(page.locator('[data-testid="conn-status"][data-connected="true"]')).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByRole("heading", { name: "bug" })).toBeVisible();
+    await expect(rows(page)).toHaveCount(0);
+    // … but the header offers the escape hatch, since synced matches exist.
+    const chip = page.getByTestId("label-synced-toggle");
+    await expect(chip).toContainText("synced");
+
+    // synced=1 (via the chip) folds the synced items in and flips the chip.
+    await chip.click();
+    await expect(page).toHaveURL(/label=bug&synced=1/);
+    await expect(rows(page).first()).toBeVisible();
+    expect(await rows(page).count()).toBeGreaterThan(0);
+    await expect(page.getByTestId("label-synced-toggle")).toHaveText("hide synced");
+  });
+
   test("gcal events feed the calendar rail but leave the built-in lists", async ({ page, api }) => {
-    // A deterministic event today (FIXED_NOW-aligned), due today too.
+    // A deterministic event today (FIXED_NOW-aligned), due today too. The
+    // title must be UNIQUE vs the gcal mock's own seed list (mock.go): the
+    // mock is anchored to the daemon's REAL clock, so on the day the real
+    // date coincides with FIXED_NOW's date its "Sprint review" lands on the
+    // same displayed rail day and a shared title makes the strict-mode
+    // locator below match two blocks.
     await api.upsertExternal("gcal:test", [
       {
-        externalRef: "ev-sprint",
-        title: "Sprint review",
+        externalRef: "ev-audit",
+        title: "Quarterly audit sync",
         dueTime: "2026-07-06T16:00:00Z",
         externalData: { start: "2026-07-06T16:00:00Z", end: "2026-07-06T16:30:00Z" },
       },
@@ -85,14 +121,14 @@ test.describe("sources ≠ tasks model", () => {
     // still shows the synced calendar event.
     await expect(page.getByTestId("calendar-rail")).toBeVisible();
     await expect(
-      page.getByTestId("cal-event").filter({ hasText: "Sprint review" }),
+      page.getByTestId("cal-event").filter({ hasText: "Quarterly audit sync" }),
     ).toBeVisible();
 
     // The same event does NOT clutter the All list (local-by-default) …
-    await expect(rows(page).filter({ hasText: "Sprint review" })).toHaveCount(0);
+    await expect(rows(page).filter({ hasText: "Quarterly audit sync" })).toHaveCount(0);
 
     // … but is reachable in its gcal Source view.
     await page.locator('[data-testid="side-item"][data-label="gcal:test"]').click();
-    await expect(rows(page).filter({ hasText: "Sprint review" }).first()).toBeVisible();
+    await expect(rows(page).filter({ hasText: "Quarterly audit sync" }).first()).toBeVisible();
   });
 });

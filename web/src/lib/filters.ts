@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from "react";
 import type { Task } from "../gen/task/task_pb";
+import type { PromotableKind } from "./views";
 import { dayDiff, tsDate } from "./format";
+import { onStorageChange, readVersionedJSON, writeVersionedJSON } from "./storage";
 
 // A SavedFilter is the promotion mechanism for the sources≠tasks model: a
 // named predicate over the full replica that pulls a chosen subset — including
@@ -26,23 +28,23 @@ export interface FilterPredicate {
   hasDue?: boolean;
   /** Task is due within N days (overdue counts). */
   dueWithinDays?: number;
-  /** Include completed tasks. Default false. (The active replica holds no
-   *  completed tasks, so this only bites when the predicate is reused over a
-   *  fuller set — but it keeps the pure function honest.) */
-  includeCompleted?: boolean;
 }
 
 export interface SavedFilter {
   id: string;
   name: string;
   predicate: FilterPredicate;
+  /** Built-in lists this filter also promotes its matches into, as a named
+   *  section below the local tasks. Additive and optional — absent on older
+   *  saved filters, so the storage envelope stays v1. */
+  showIn?: PromotableKind[];
 }
 
 /** Pure membership test — the same predicate the sidebar filter view applies
  *  over the replica. Every set constraint is AND-ed; an unset field imposes no
  *  constraint. */
 export function matchesFilter(p: FilterPredicate, t: Task, now: Date): boolean {
-  if (!p.includeCompleted && t.completedTime !== undefined) return false;
+  if (t.completedTime !== undefined) return false; // predicates cover active tasks only
   if (p.source !== undefined && t.source !== p.source) return false;
   if (p.labelsAll && p.labelsAll.length > 0 && !p.labelsAll.every((l) => t.labels.includes(l)))
     return false;
@@ -62,19 +64,27 @@ export function matchesFilter(p: FilterPredicate, t: Task, now: Date): boolean {
 }
 
 const KEY = "taskd-filters";
+const VERSION = 1;
 
 function load(): SavedFilter[] {
-  try {
-    const raw = localStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as SavedFilter[]) : [];
-  } catch {
-    return [];
-  }
+  // Existing users' pre-envelope raw array survives: read back as-is and
+  // rewritten enveloped on first load (see lib/storage).
+  return readVersionedJSON<SavedFilter[]>(KEY, { version: VERSION }) ?? [];
 }
 
 class FilterStore {
   private items: SavedFilter[] = load();
   private listeners = new Set<() => void>();
+
+  constructor() {
+    // Another tab/window wrote our key: reload from storage and re-emit, so
+    // both documents converge — and our NEXT whole-array persist builds on
+    // their edit instead of clobbering it with a stale in-memory copy.
+    onStorageChange(KEY, () => {
+      this.items = load();
+      for (const fn of this.listeners) fn();
+    });
+  }
 
   subscribe = (fn: () => void): (() => void) => {
     this.listeners.add(fn);
@@ -107,11 +117,7 @@ class FilterStore {
   }
 
   private persist(): void {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(this.items));
-    } catch {
-      // storage full/blocked — the in-memory list still works this session
-    }
+    writeVersionedJSON(KEY, VERSION, this.items); // storage errors swallowed inside
     for (const fn of this.listeners) fn();
   }
 }

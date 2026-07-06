@@ -113,4 +113,27 @@ test.describe("row context menu — synced tasks", () => {
     await expect(m.getByRole("menuitem", { name: "Open" })).toBeVisible();
     await expect(m.getByRole("menuitem", { name: "Delete" })).toBeVisible();
   });
+
+  test("a synced task's menu hides Schedule… (due is source-owned) but keeps the user-owned actions", async ({
+    page,
+    api,
+  }) => {
+    const gh = (await api.listActive()).find((t) => t.source === "github");
+    expect(gh, "expected a github-sourced task").toBeTruthy();
+    await page.locator('[data-testid="side-item"][data-label="github"]').click();
+    const syncedRow = rows(page).filter({ hasText: gh!.title }).first();
+    await expect(syncedRow).toBeVisible();
+
+    await syncedRow.click({ button: "right" });
+    const m = page.getByRole("menu", { name: "Task actions" });
+    await expect(m).toBeVisible();
+    // Due follows the source, so a UI write would be reverted by the next sync
+    // → no Schedule… entry (matches the palette + detail-panel guards).
+    await expect(m.getByRole("menuitem", { name: "Schedule" })).toHaveCount(0);
+    // Labels + user_data are user-owned, so these stay available — as does Delete.
+    await expect(m.getByRole("menuitem", { name: "Priority" })).toBeVisible();
+    await expect(m.getByRole("menuitem", { name: "Add label" })).toBeVisible();
+    await expect(m.getByRole("menuitem", { name: "Plan today" })).toBeVisible();
+    await expect(m.getByRole("menuitem", { name: "Delete" })).toBeVisible();
+  });
 });

@@ -1,13 +1,13 @@
 import { useState } from "react";
-import { useNow, useSnapshot, useStore, useThemeSelector } from "../lib/hooks";
-import { matchesView, sameView, viewTitle, type View } from "../lib/views";
+import { useNow, useSnapshot, useStore } from "../lib/hooks";
+import { countView, sameView, viewTitle, type View } from "../lib/views";
 import { chipParts } from "../lib/format";
 import { registry, useRegistry } from "../lib/extensions";
 import { addLabel, setProject } from "../lib/actions";
-import { notify } from "../lib/notify";
 import { readTaskId } from "../lib/dnd";
 import { savedViews, useSavedViews, type SavedView } from "../lib/savedviews";
 import { savedFilters, useSavedFilters, type SavedFilter } from "../lib/filters";
+import { useExtensions, isSourcePaused } from "../lib/admin";
 import { Icon } from "./icons";
 import { GearIcon } from "./Settings";
 
@@ -21,8 +21,9 @@ export function Sidebar({
   onApplySaved,
   onNewFilter,
   onEditFilter,
-  onToggleTheme,
   onOpenSettings,
+  collapsed,
+  onToggleCollapsed,
 }: {
   view: View;
   onNavigate: (v: View) => void;
@@ -30,41 +31,48 @@ export function Sidebar({
   onApplySaved: (v: SavedView) => void;
   onNewFilter: () => void;
   onEditFilter: (f: SavedFilter) => void;
-  /** Still passed by App; the label now comes from the theme registry. */
-  dark: boolean;
-  onToggleTheme: () => void;
   onOpenSettings: () => void;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
 }) {
   const snap = useSnapshot();
   const store = useStore();
   const now = useNow();
   const saved = useSavedViews();
   const filters = useSavedFilters();
-  const { theme } = useThemeSelector();
+  const { exts } = useExtensions();
   useRegistry(); // re-render as extensions register views
   const tasks = [...snap.tasks.values()];
 
   // Drop a dragged task onto a project → move it there; onto a label → add it.
+  // The action itself now shows the toast (with Undo, ⌘Z-reachable) — no
+  // separate, non-undoable notice here.
   const dropOnProject = (project: string) => (taskId: string) => {
     const t = snap.tasks.get(taskId);
     if (!t) return;
     setProject(store, t, project);
-    notify.toast({ message: `Moved to ${chipParts(project).val}` });
   };
   const dropOnLabel = (label: string) => (taskId: string) => {
     const t = snap.tasks.get(taskId);
     if (!t || t.labels.includes(label)) return;
     addLabel(store, t, label);
-    notify.toast({ message: `Added ${label}` });
   };
 
-  const count = (v: View) => tasks.filter((t) => matchesView(t, v, now)).length;
+  // Built-in list badges include promoted (showIn) tasks — one shared helper
+  // with App's header count so the two can't drift.
+  const count = (v: View) => countView(tasks, v, now, filters);
 
+  // Labels + projects are LOCAL-only: a syncer-applied label (e.g. `bug`,
+  // `calendar`) must not dominate these sections. Synced items stay reachable
+  // via SOURCES and via filters; a label with no local task simply disappears.
   const labelCounts = new Map<string, number>();
   const sourceCounts = new Map<string, number>();
   for (const t of tasks) {
-    for (const l of t.labels) labelCounts.set(l, (labelCounts.get(l) ?? 0) + 1);
-    if (t.source !== "") sourceCounts.set(t.source, (sourceCounts.get(t.source) ?? 0) + 1);
+    if (t.source === "") {
+      for (const l of t.labels) labelCounts.set(l, (labelCounts.get(l) ?? 0) + 1);
+    } else {
+      sourceCounts.set(t.source, (sourceCounts.get(t.source) ?? 0) + 1);
+    }
   }
   const projects = [...labelCounts.keys()].filter((l) => chipParts(l).ns === "project").sort();
   const plain = [...labelCounts.keys()].filter((l) => chipParts(l).ns !== "project").sort();
@@ -78,10 +86,50 @@ export function Sidebar({
     { kind: "completed" },
   ];
 
+  // Collapsed: a slim icon rail — just enough to expand back and start a
+  // task. Dynamic content (projects, labels, filters, sources) needs real
+  // width to be legible, so it simply isn't shown until expanded again,
+  // rather than trying to force it into icons that don't exist for it.
+  if (collapsed) {
+    return (
+      <aside
+        data-testid="sidebar-collapsed"
+        className="flex w-12 shrink-0 flex-col items-center gap-2 border-r border-line bg-surface py-3"
+      >
+        <button
+          onClick={onToggleCollapsed}
+          aria-label="Expand sidebar"
+          title="Expand sidebar"
+          className="rounded-md p-1.5 text-mute hover:bg-ink/[.05] hover:text-ink dark:hover:bg-ink/[.08]"
+        >
+          <Icon name="chevron-right" size={14} />
+        </button>
+        <button
+          onClick={onAddTask}
+          aria-label="Add task"
+          title="Add task"
+          className="flex h-[26px] w-[26px] items-center justify-center rounded-full bg-accent text-white hover:bg-accent/90"
+        >
+          <Icon name="plus" size={13} strokeWidth={2.5} />
+        </button>
+      </aside>
+    );
+  }
+
   return (
     <aside className="flex w-52 shrink-0 flex-col border-r border-line bg-surface">
-      <div className="px-3 pb-3 pt-4 font-mono text-[15px] font-medium tracking-tight">
-        taskd<span className="caret text-accent">_</span>
+      <div className="flex items-center justify-between px-3 pb-3 pt-4">
+        <span className="font-mono text-[15px] font-medium tracking-tight">
+          taskd<span className="caret text-accent">_</span>
+        </span>
+        <button
+          onClick={onToggleCollapsed}
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar"
+          className="rounded-md p-1 text-faint hover:bg-ink/[.05] hover:text-ink dark:hover:bg-ink/[.08]"
+        >
+          <Icon name="chevron-right" size={13} className="rotate-180" />
+        </button>
       </div>
 
       <div className="px-2 pb-2">
@@ -236,6 +284,7 @@ export function Sidebar({
                 label={s}
                 mono
                 count={sourceCounts.get(s)}
+                paused={isSourcePaused(exts, s)}
                 active={sameView(view, { kind: "source", source: s })}
                 onClick={() => onNavigate({ kind: "source", source: s })}
               />
@@ -252,14 +301,6 @@ export function Sidebar({
         >
           <GearIcon size={15} />
           Settings
-        </button>
-        <button
-          onClick={onToggleTheme}
-          title="Toggle light/dark (full theme picker lives in Settings)"
-          data-theme-id={theme.id}
-          className="w-full border-t border-line px-3 py-2 text-left font-mono text-[11px] text-mute hover:text-ink"
-        >
-          theme: {theme.id}
         </button>
       </div>
     </aside>
@@ -291,6 +332,7 @@ function SideItem({
   count,
   active,
   mono,
+  paused,
   onClick,
   onDropTask,
 }: {
@@ -298,6 +340,8 @@ function SideItem({
   count?: number;
   active: boolean;
   mono?: boolean;
+  /** A source whose extension is disabled: shows a muted pill + dimmed count. */
+  paused?: boolean;
   onClick: () => void;
   /** When set, a dragged task dropped here is passed by id. */
   onDropTask?: (taskId: string) => void;
@@ -309,6 +353,7 @@ function SideItem({
         onClick={onClick}
         data-testid="side-item"
         data-label={label}
+        data-paused={paused ? "true" : undefined}
         onDragOver={
           onDropTask
             ? (e) => {
@@ -328,7 +373,7 @@ function SideItem({
               }
             : undefined
         }
-        className={`flex w-full items-center justify-between px-3 py-[5px] text-left text-[13px] ${
+        className={`flex w-full items-center justify-between gap-2 px-3 py-[5px] text-left text-[13px] ${
           dragOver
             ? "bg-accent/20 text-accent ring-1 ring-inset ring-accent/40"
             : active
@@ -336,9 +381,23 @@ function SideItem({
               : "text-ink hover:bg-ink/[.04] dark:hover:bg-ink/[.07]"
         } ${mono ? "font-mono text-[12px]" : ""}`}
       >
-        <span className="truncate">{label}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate">{label}</span>
+          {paused && (
+            <span
+              data-testid="source-paused-pill"
+              className="shrink-0 rounded border border-line px-1 py-px font-sans text-[9px] uppercase tracking-wide text-faint"
+            >
+              paused
+            </span>
+          )}
+        </span>
         {count !== undefined && count > 0 && (
-          <span className={`font-mono text-[11px] ${active ? "text-accent" : "text-faint"}`}>
+          <span
+            className={`font-mono text-[11px] ${
+              paused ? "text-faint/50" : active ? "text-accent" : "text-faint"
+            }`}
+          >
             {count}
           </span>
         )}

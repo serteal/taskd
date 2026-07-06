@@ -6,6 +6,8 @@ import type { View, SortMode } from "./views";
 import { chipParts, endOfDay } from "./format";
 import { SORT_LABELS } from "./views";
 import { completeTask, deleteTaskWithUndo, rescheduleTask } from "./actions";
+import { savedViews, type SavedView } from "./savedviews";
+import { savedFilters } from "./filters";
 import { Icon } from "../components/icons";
 import { GearIcon } from "../components/Settings";
 
@@ -35,6 +37,7 @@ export interface CommandContext {
   openAdd: () => void;
   openSettings?: () => void;
   saveCurrentView: () => void;
+  applySaved: (v: SavedView) => void;
   extCommands: Command[];
   now: Date;
 }
@@ -80,11 +83,23 @@ export function buildStaticCommands(ctx: CommandContext): PaletteCommand[] {
   for (const [title, v] of fixed) {
     out.push({ id: `go-${title}`, title: `Go to ${title}`, group: "Go to", icon: <Icon name="chevron-right" />, run: () => ctx.navigate(v) });
   }
-  // Navigation — computed projects / labels / sources
+  // Navigation — saved views (a presentation preset) and saved filters (a
+  // membership preset over the full replica, incl. synced items). Every
+  // other navigable surface here gets a "Go to" command; these two
+  // user-created ones need it just as much.
+  for (const v of savedViews.getSnapshot()) {
+    out.push({ id: `go-view-${v.id}`, title: `Go to ${v.name}`, group: "Go to", icon: <Icon name="star" />, run: () => ctx.applySaved(v) });
+  }
+  for (const f of savedFilters.getSnapshot()) {
+    out.push({ id: `go-filter-${f.id}`, title: `Go to ${f.name}`, group: "Go to", icon: <Icon name="diamond" />, run: () => ctx.navigate({ kind: "filter", id: f.id }) });
+  }
+  // Navigation — computed projects / labels / sources. Labels/projects are
+  // LOCAL-only (matching the sidebar's quarantine): a syncer-applied label
+  // isn't offered as a "Go to label" entry — its items live under its source.
   const labels = new Set<string>();
   const sources = new Set<string>();
   for (const t of ctx.tasks) {
-    for (const l of t.labels) labels.add(l);
+    if (t.source === "") for (const l of t.labels) labels.add(l);
     if (t.source) sources.add(t.source);
   }
   for (const l of [...labels].sort()) {
@@ -113,14 +128,20 @@ export function buildStaticCommands(ctx: CommandContext): PaletteCommand[] {
   if (sel) {
     const label = sel.title.length > 24 ? sel.title.slice(0, 23) + "…" : sel.title;
     out.push({ id: "sel-open", title: `Open “${label}”`, group: "Selected task", icon: <Icon name="open" />, run: () => ctx.openTask(sel.id) });
-    out.push({ id: "sel-done", title: `Complete “${label}”`, group: "Selected task", icon: <Icon name="check" />, run: () => completeTask(ctx.store, sel) });
-    out.push({
-      id: "sel-today",
-      title: `Schedule “${label}” today`,
-      group: "Selected task",
-      icon: <Icon name="calendar" />,
-      run: () => rescheduleTask(ctx.store, sel, endOfDay(ctx.now)),
-    });
+    // Synced tasks' completion is source-owned — don't offer a Complete that the
+    // next sync would revert (matches the row/detail/keyboard guards).
+    if (sel.source === "")
+      out.push({ id: "sel-done", title: `Complete “${label}”`, group: "Selected task", icon: <Icon name="check" />, run: () => completeTask(ctx.store, sel) });
+    // Due is source-owned on synced tasks — don't offer a Schedule the next
+    // sync would revert (mirrors the sel-done guard and the row/menu guards).
+    if (sel.source === "")
+      out.push({
+        id: "sel-today",
+        title: `Schedule “${label}” today`,
+        group: "Selected task",
+        icon: <Icon name="calendar" />,
+        run: () => rescheduleTask(ctx.store, sel, endOfDay(ctx.now)),
+      });
     out.push({ id: "sel-delete", title: `Delete “${label}”`, group: "Selected task", icon: <Icon name="trash" />, run: () => deleteTaskWithUndo(ctx.store, sel) });
   }
 

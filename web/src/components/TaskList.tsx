@@ -1,8 +1,9 @@
 import { useState } from "react";
 import type { Task } from "../gen/task/task_pb";
 import { useSnapshot, useStore } from "../lib/hooks";
-import { dayDiff, tsDate } from "../lib/format";
-import { matchesView, type SortMode, type View } from "../lib/views";
+import { tsDate } from "../lib/format";
+import { matchesView, type PromotedSection, type SortMode, type View } from "../lib/views";
+import { flattenSections, groupOf, subtaskCounts, type NestRow, type NestSection } from "../lib/nest";
 import { computeReorder, taskOrder } from "../lib/reorder";
 import { readTaskId } from "../lib/dnd";
 import { completeTask, rescheduleMany } from "../lib/actions";
@@ -10,22 +11,9 @@ import { TaskRow } from "./TaskRow";
 import { Popover } from "./Popover";
 import { ScheduleMenu } from "./pickers";
 
-// Grouping encodes time pressure, nothing else: Overdue → Today → Tomorrow →
-// This week → Later → No date. Within a group: soonest due first, then
-// newest created. (Manual sort renders flat instead — grouping and manual
-// order are mutually exclusive.)
-const GROUPS = ["Overdue", "Today", "Tomorrow", "This week", "Later", "No date"] as const;
-
-function groupOf(t: Task, now: Date): (typeof GROUPS)[number] {
-  const due = tsDate(t.dueTime);
-  if (!due) return "No date";
-  const d = dayDiff(due, now);
-  if (d < 0) return "Overdue";
-  if (d === 0) return "Today";
-  if (d === 1) return "Tomorrow";
-  if (d < 7) return "This week";
-  return "Later";
-}
+// Grouping (time pressure) and subtask nesting both live in lib/nest — App
+// computes the sections once and hands the SAME structure here and to its
+// keyboard order, so j/k always matches what this list renders.
 
 function smartCmp(a: Task, b: Task): number {
   const ad = tsDate(a.dueTime)?.getTime() ?? Infinity;
@@ -79,12 +67,16 @@ const EMPTY_COPY: Record<string, string> = {
 
 export function TaskList({
   tasks,
+  sections,
   view,
   now,
   sort,
   selectedId,
   bulkSelected,
   editingId,
+  extraSections,
+  collapsed,
+  onToggleCollapse,
   onSelect,
   onActivate,
   onManualReorder,
@@ -94,12 +86,21 @@ export function TaskList({
   onContextMenu,
 }: {
   tasks: Task[];
+  /** The nested display sections App computed (lib/nest) — the same structure
+   *  that feeds App's keyboard order. */
+  sections: NestSection[];
   view: View;
   now: Date;
   sort: SortMode;
   selectedId: string | null;
   bulkSelected: Set<string>;
   editingId: string | null;
+  /** Promoted filter sections rendered below the base groups (see
+   *  promotedSections). Each is headed by its filter's name. */
+  extraSections?: PromotedSection[];
+  /** Parents whose nested children are hidden (session state, owned by App). */
+  collapsed: Set<string>;
+  onToggleCollapse: (id: string) => void;
   onSelect: (id: string) => void;
   onActivate: (id: string, mods: { meta: boolean; shift: boolean }) => void;
   /** Called after a reorder that happened while not already in manual sort. */
@@ -116,7 +117,11 @@ export function TaskList({
   // The row a drag is hovering over and which edge (for the insert indicator).
   const [dropAt, setDropAt] = useState<{ id: string; below: boolean } | null>(null);
 
-  if (tasks.length === 0) {
+  const hasExtra = !!extraSections && extraSections.length > 0;
+
+  // Empty only when there's nothing local AND nothing promoted; a promoted
+  // section alone (base empty) still renders its rows.
+  if (tasks.length === 0 && !hasExtra) {
     return (
       <div className="px-3 py-16 text-center text-[13px] text-mute">
         {EMPTY_COPY[view.kind] ?? "Nothing here."}
@@ -128,6 +133,12 @@ export function TaskList({
   }
 
   const complete = (t: Task) => {
+    // A recurring task doesn't leave the list — completion rolls it forward in
+    // place — so the leaving strike-through would only flash on and off.
+    if (t.recurrence !== "") {
+      completeTask(store, t); // optimistic + undo toast
+      return;
+    }
     // Brief strike-through before the row leaves the active set.
     setLeaving((s) => new Set(s).add(t.id));
     setTimeout(() => {
@@ -164,7 +175,11 @@ export function TaskList({
     if (sort !== "manual") onManualReorder();
   };
 
-  const row = (t: Task) => (
+  // Open-subtask counts over the whole replica (not just this view), so a
+  // parent shows its true count even when children are filtered elsewhere.
+  const counts = subtaskCounts(snap.tasks.values());
+
+  const row = (t: Task, nest?: NestRow) => (
     <TaskRow
       task={t}
       now={now}
@@ -173,6 +188,11 @@ export function TaskList({
       pulsing={snap.pulses.has(t.id)}
       checked={leaving.has(t.id)}
       editing={t.id === editingId}
+      depth={nest?.depth ?? 0}
+      breadcrumb={nest?.breadcrumb}
+      subtaskCount={counts.get(t.id) ?? 0}
+      collapsed={nest?.collapsible ? collapsed.has(t.id) : undefined}
+      onToggleCollapse={nest?.collapsible ? () => onToggleCollapse(t.id) : undefined}
       onToggle={() => complete(t)}
       onActivate={(mods) => onActivate(t.id, mods)}
       onSelect={() => onSelect(t.id)}
@@ -184,7 +204,7 @@ export function TaskList({
   );
 
   // A row wrapped as a reorder drop target. `seq` is the full display order.
-  const dropRow = (t: Task, seq: Task[]) => (
+  const dropRow = (t: Task, seq: Task[], nest?: NestRow) => (
     <div
       key={t.id}
       onDragOver={(e) => {
@@ -208,67 +228,91 @@ export function TaskList({
           : ""
       }
     >
-      {row(t)}
+      {row(t, nest)}
     </div>
   );
 
-  // Manual: one flat, reorderable list.
+  // Promoted filter sections: each headed like a group header, its filter's
+  // name in place of the time-pressure label. Rows reuse the same TaskRow
+  // markup as the base list (no reorder wrapper — promotion order is the
+  // filter's, not user-draggable).
+  const extra = hasExtra
+    ? extraSections!.map((s) => (
+        <section key={`promoted-${s.filter.id}`} data-testid="promoted-section" data-filter-name={s.filter.name}>
+          <h2 className="sticky top-0 z-10 flex items-baseline gap-2 border-b border-line bg-paper px-3 pb-1 pt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-mute">
+            {s.filter.name}
+            <span className="text-faint">{s.tasks.length}</span>
+          </h2>
+          {s.tasks.map((t) => (
+            <div key={t.id}>{row(t)}</div>
+          ))}
+        </section>
+      ))
+    : null;
+
+  // Manual: one flat, reorderable list (promoted sections follow the base).
   if (sort === "manual") {
-    return <div>{tasks.map((t) => dropRow(t, tasks))}</div>;
+    return (
+      <div>
+        {tasks.map((t) => dropRow(t, tasks))}
+        {extra}
+      </div>
+    );
   }
 
-  // Otherwise: grouped by time pressure, but still reorderable — dropping a
-  // row onto another switches the list to manual (applyReorder does it).
-  const grouped = new Map<string, Task[]>();
-  for (const t of tasks) {
-    const g = groupOf(t, now);
-    const arr = grouped.get(g);
-    if (arr) arr.push(t);
-    else grouped.set(g, [t]);
-  }
-  const seq = GROUPS.flatMap((g) => grouped.get(g) ?? []);
+  // Otherwise: the nested time-pressure sections from lib/nest, still
+  // reorderable — dropping a row onto another switches the list to manual
+  // (applyReorder does it). `seq` is the exact on-screen order.
+  const seq = flattenSections(sections);
 
   return (
     <div>
-      {GROUPS.filter((g) => grouped.has(g)).map((g) => (
-        <section key={g}>
-          <h2
-            className={`sticky top-0 z-10 flex items-baseline gap-2 border-b border-line bg-paper px-3 pb-1 pt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] ${
-              g === "Overdue" ? "text-warn" : "text-mute"
-            }`}
-          >
-            {g}
-            <span className="text-faint">{grouped.get(g)!.length}</span>
-            {/* Overdue gets a one-click "clear my overdue": batch-reschedule
-                every overdue task in view to a chosen day. */}
-            {g === "Overdue" && (
-              <span className="ml-auto self-center normal-case tracking-normal">
-                <Popover
-                  align="right"
-                  trigger={({ toggle }) => (
-                    <button
-                      onClick={toggle}
-                      aria-label="Reschedule overdue tasks"
-                      className="rounded border border-warn/40 px-1.5 py-px text-[10px] font-medium text-warn hover:bg-warn/10"
-                    >
-                      Reschedule
-                    </button>
-                  )}
-                >
-                  {(close) => (
-                    <ScheduleMenu
-                      now={now}
-                      onChange={(d) => rescheduleMany(store, grouped.get("Overdue") ?? [], d)}
-                      close={close}
-                    />
-                  )}
-                </Popover>
-              </span>
-            )}
-          </h2>
-          {grouped.get(g)!.map((t) => dropRow(t, seq))}
+      {sections.map((s) => (
+        <section key={s.key}>
+          {s.header !== null && (
+            <h2
+              className={`sticky top-0 z-10 flex items-baseline gap-2 border-b border-line bg-paper px-3 pb-1 pt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] ${
+                s.header === "Overdue" ? "text-warn" : "text-mute"
+              }`}
+            >
+              {s.header}
+              <span className="text-faint">{s.count}</span>
+              {/* Overdue gets a one-click "clear my overdue": batch-reschedule
+                  every overdue task in view to a chosen day. */}
+              {s.header === "Overdue" && (
+                <span className="ml-auto self-center normal-case tracking-normal">
+                  <Popover
+                    align="right"
+                    trigger={({ toggle }) => (
+                      <button
+                        onClick={toggle}
+                        aria-label="Reschedule overdue tasks"
+                        className="rounded border border-warn/40 px-1.5 py-px text-[10px] font-medium text-warn hover:bg-warn/10"
+                      >
+                        Reschedule
+                      </button>
+                    )}
+                  >
+                    {(close) => (
+                      <ScheduleMenu
+                        now={now}
+                        onChange={(d) =>
+                          // Every overdue task in view, including any children a
+                          // collapse is currently hiding from the rows.
+                          rescheduleMany(store, tasks.filter((t) => groupOf(t, now) === "Overdue"), d)
+                        }
+                        close={close}
+                      />
+                    )}
+                  </Popover>
+                </span>
+              )}
+            </h2>
+          )}
+          {s.rows.map((r) => dropRow(r.task, seq, r))}
         </section>
       ))}
+      {extra}
     </div>
   );
 }

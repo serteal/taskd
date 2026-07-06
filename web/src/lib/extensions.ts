@@ -6,6 +6,7 @@ import { chipParts, tsDate } from "./format";
 import { TASK_DRAG_MIME, readTaskId } from "./dnd";
 import { extensionNotify } from "./notify";
 import { Icon, type IconName } from "../components/icons";
+import type { Theme } from "./themes";
 
 // The host side of the extension system: a registry the UI reads
 // reactively, the api object handed to each extension's register(), and the
@@ -70,6 +71,7 @@ class ExtensionRegistry {
   panels: Panel[] = [];
   commands: Command[] = [];
   quickAddTokens: QuickAddToken[] = [];
+  themes: Theme[] = [];
   private listeners = new Set<() => void>();
   private version = 0;
 
@@ -111,7 +113,68 @@ export function useRegistry(): number {
 // handler on mount.
 export const uiBridge: { openTask: (id: string) => void } = { openTask: () => {} };
 
-export function buildAPI(store: TaskStore) {
+// The public extension patch contract (web/extension-api/index.d.ts's
+// TaskPatch): only these user-owned fields may cross the bridge into the
+// internal store. Everything else the internal TaskPatch also accepts —
+// recurrence, parentId — is host-owned structure an extension must not smuggle
+// in through the type-only boundary.
+const PUBLIC_PATCH_KEYS: readonly string[] = [
+  "title",
+  "notes",
+  "labels",
+  "due",
+  "completed",
+  "userData",
+  "expectedRevision",
+];
+
+// One-time warnings, keyed so a chatty extension can't flood the console.
+const warnedPatchKeys = new Set<string>();
+function warnOncePatch(key: string, message: string): void {
+  if (warnedPatchKeys.has(key)) return;
+  warnedPatchKeys.add(key);
+  console.warn(message);
+}
+
+/**
+ * Enforce the extension patch contract at the host boundary. The type-only
+ * `.d.ts` can't stop a bundle from passing extra fields at runtime, so here we:
+ *   - drop any key outside the public whitelist (recurrence/parentId included),
+ *   - apply the same field-ownership rule the UI does: `completed: true` on a
+ *     synced task is stripped (the next sync would revert it anyway).
+ * Each dropped/stripped field logs once, naming the extension.
+ */
+function sanitizeExtPatch(
+  extName: string,
+  id: string,
+  patch: TaskPatch,
+  store: TaskStore,
+): TaskPatch {
+  const clean: TaskPatch = {};
+  for (const key of Object.keys(patch)) {
+    if (PUBLIC_PATCH_KEYS.includes(key)) {
+      (clean as Record<string, unknown>)[key] = (patch as Record<string, unknown>)[key];
+    } else {
+      warnOncePatch(
+        `${extName}:${key}`,
+        `taskd: extension “${extName}” tried to set unsupported patch field “${key}”; dropped.`,
+      );
+    }
+  }
+  if (clean.completed === true) {
+    const t = store.getSnapshot().tasks.get(id);
+    if (t && t.source !== "") {
+      warnOncePatch(
+        `${extName}:completed-synced`,
+        `taskd: extension “${extName}” tried to complete synced task ${id}; completion is source-owned and was dropped.`,
+      );
+      delete clean.completed;
+    }
+  }
+  return clean;
+}
+
+export function buildAPI(store: TaskStore, extName = "extension") {
   const useTasks = (): Task[] => {
     const snap = useSyncExternalStore(store.subscribe, store.getSnapshot);
     return [...snap.tasks.values()];
@@ -146,12 +209,22 @@ export function buildAPI(store: TaskStore) {
       registry.quickAddTokens.push(t);
       registry.bump();
     },
+    /** Contribute a theme to Settings' picker — same idea as a panel or
+     *  presenter, just for the theme catalog rather than a task view. */
+    registerTheme: (t: Theme) => {
+      registry.themes.push(t);
+      registry.bump();
+    },
     hooks: { useTasks, useNow },
     /** Non-hook snapshot of active tasks, for imperative code (e.g. commands). */
     getTasks: (): Task[] => [...store.getSnapshot().tasks.values()],
     store: {
       create: (f: { title: string; notes?: string; labels?: string[]; due?: Date }) => store.create(f),
-      update: (id: string, patch: TaskPatch) => store.update(id, patch),
+      // The internal UpdateResult is NOT part of the extension contract
+      // (index.d.ts resolves this to void); the host also enforces
+      // field-ownership on the patch here rather than trusting the caller.
+      update: (id: string, patch: TaskPatch): Promise<void> =>
+        store.update(id, sanitizeExtPatch(extName, id, patch, store)).then(() => {}),
       delete: (id: string) => store.delete(id),
     },
     client: store.client,
@@ -175,7 +248,6 @@ export function buildAPI(store: TaskStore) {
  * One broken extension logs and is skipped; it cannot take the app down.
  */
 export async function loadExtensions(store: TaskStore): Promise<void> {
-  const api = buildAPI(store);
   const urls: string[] = [];
   try {
     const res = await fetch("/ext/index.json");
@@ -197,7 +269,9 @@ export async function loadExtensions(store: TaskStore): Promise<void> {
       if (!ext || typeof ext.register !== "function") {
         throw new Error("default export is not a TaskdExtension");
       }
-      ext.register(api);
+      // A per-extension API so the boundary's field-ownership warnings can
+      // name the offending extension.
+      ext.register(buildAPI(store, ext.name ?? url));
       console.info(`taskd: loaded extension ${ext.name ?? url}`);
     } catch (err) {
       console.error(`taskd: extension ${url} failed to load:`, err);

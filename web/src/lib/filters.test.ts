@@ -65,10 +65,9 @@ describe("matchesFilter", () => {
     expect(match({ dueWithinDays: 3 }, task({}))).toBe(false); // undated
   });
 
-  it("excludes completed tasks unless includeCompleted", () => {
+  it("always excludes completed tasks", () => {
     const done = task({ completed: new Date(2026, 6, 5) });
     expect(match({}, done)).toBe(false);
-    expect(match({ includeCompleted: true }, done)).toBe(true);
   });
 
   it("AND-s every constraint together (a 'Reviews' filter)", () => {
@@ -109,6 +108,16 @@ describe("savedFilters store", () => {
   it("persists to localStorage under taskd-filters", () => {
     savedFilters.add({ name: "Persisted", predicate: { hasDue: true } });
     expect(mem.get("taskd-filters")).toContain("Persisted");
+  });
+
+  it("round-trips the optional showIn promotion targets", () => {
+    const f = savedFilters.add({ name: "Reviews", predicate: { source: "github" }, showIn: ["today", "inbox"] });
+    expect(savedFilters.get(f.id)?.showIn).toEqual(["today", "inbox"]);
+    // The persisted envelope carries it too.
+    expect(mem.get("taskd-filters")).toContain("today");
+    // And it can be cleared back to absent via update.
+    savedFilters.update(f.id, { showIn: undefined });
+    expect(savedFilters.get(f.id)?.showIn).toBeUndefined();
   });
 
   it("notifies subscribers on change", () => {

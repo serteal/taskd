@@ -1,5 +1,6 @@
 import type { Task } from "../gen/task/task_pb";
 import { humanDue, tsDate } from "../lib/format";
+import { humanize } from "../lib/recur";
 import { getTimebox, fmtClock, fmtTimeboxRange } from "../lib/timebox";
 import { registry } from "../lib/extensions";
 import { setTaskDrag } from "../lib/dnd";
@@ -32,6 +33,11 @@ export function TaskRow({
   onRename,
   onEndEdit,
   onContextMenu,
+  depth = 0,
+  breadcrumb,
+  subtaskCount = 0,
+  collapsed,
+  onToggleCollapse,
 }: {
   task: Task;
   now: Date;
@@ -52,6 +58,16 @@ export function TaskRow({
   onEndEdit: () => void;
   /** Open the row's context menu at the cursor. */
   onContextMenu?: (x: number, y: number) => void;
+  /** Nesting depth (0 or 1) — a child indented under its in-view parent. */
+  depth?: number;
+  /** "↳ parent title" chip for a child rendered flat (parent elsewhere). */
+  breadcrumb?: string;
+  /** Open children in the replica; > 0 renders the "N subtasks" chip. */
+  subtaskCount?: number;
+  /** Set (with onToggleCollapse) when this parent's children nest right below;
+   *  turns the subtask chip into the collapse toggle. */
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   const store = useStore();
   const due = tsDate(task.dueTime);
@@ -74,7 +90,10 @@ export function TaskRow({
         e.preventDefault();
         onContextMenu(e.clientX, e.clientY);
       }}
-      className={`group relative flex cursor-pointer items-center gap-2.5 border-b border-line/70 px-3 py-[7px] ${
+      data-depth={depth}
+      className={`group relative flex cursor-pointer items-center gap-2.5 border-b border-line/70 py-[7px] pr-3 ${
+        depth > 0 ? "pl-9" : "pl-3"
+      } ${
         bulkSelected
           ? "bg-accent/[.08]"
           : selected
@@ -92,14 +111,21 @@ export function TaskRow({
       </span>
       <button
         aria-label={checked ? `Reopen ${task.title}` : `Complete ${task.title}`}
+        // Synced tasks' completion is owned by their source (the next sync would
+        // revert a client-side complete), so the checkbox is inert on them.
+        disabled={synced}
+        title={synced ? "Completion follows the source" : undefined}
         onClick={(e) => {
           e.stopPropagation();
+          if (synced) return;
           onToggle();
         }}
         className={`flex h-[16px] w-[16px] shrink-0 items-center justify-center rounded-full border transition-colors ${
           checked
             ? "border-accent bg-accent text-white"
-            : "border-mute/60 text-transparent hover:border-accent hover:text-accent/60"
+            : synced
+              ? "cursor-not-allowed border-line text-transparent"
+              : "border-mute/60 text-transparent hover:border-accent hover:text-accent/60"
         }`}
       >
         <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden>
@@ -144,10 +170,53 @@ export function TaskRow({
         </span>
       )}
 
+      {task.recurrence !== "" && (
+        <span
+          data-testid="row-recur"
+          title={humanize(task.recurrence)}
+          className="flex shrink-0 items-center text-mute"
+        >
+          <Icon name="repeat" size={12} />
+        </span>
+      )}
+
       {/* Meta chips — always visible; hover no longer swaps them out. Row
           actions (schedule, priority, label, delete) live in the right-click
           context menu instead. */}
       <span className="hidden shrink-0 items-center gap-1 sm:flex">
+        {breadcrumb && (
+          <span
+            data-testid="row-breadcrumb"
+            title={`Subtask of “${breadcrumb}”`}
+            className="inline-flex max-w-[140px] items-center gap-0.5 rounded-full border border-line px-1.5 py-px font-mono text-[11px] leading-4 text-mute"
+          >
+            <span aria-hidden>↳</span>
+            <span className="truncate">{breadcrumb}</span>
+          </span>
+        )}
+        {subtaskCount > 0 &&
+          (onToggleCollapse ? (
+            <button
+              data-testid="row-subtasks"
+              aria-label={collapsed ? "Expand subtasks" : "Collapse subtasks"}
+              aria-expanded={!collapsed}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleCollapse();
+              }}
+              className="inline-flex items-center gap-0.5 rounded-full border border-line px-1.5 py-px font-mono text-[11px] leading-4 text-mute hover:border-mute hover:text-ink"
+            >
+              <Icon name="chevron-right" size={10} className={collapsed ? "" : "rotate-90"} />
+              {subtaskCount} subtask{subtaskCount === 1 ? "" : "s"}
+            </button>
+          ) : (
+            <span
+              data-testid="row-subtasks"
+              className="inline-flex items-center rounded-full border border-line px-1.5 py-px font-mono text-[11px] leading-4 text-mute"
+            >
+              {subtaskCount} subtask{subtaskCount === 1 ? "" : "s"}
+            </span>
+          ))}
         {timebox && (
           <span
             data-testid="row-timebox"

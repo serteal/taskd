@@ -8,10 +8,15 @@ import {
   viewToSearch,
   readViewPrefs,
   writeViewPrefs,
+  readDefaultView,
+  writeDefaultView,
+  promotedSections,
+  countView,
   DEFAULT_VIEW_PREFS,
   type View,
+  type PromotableKind,
 } from "./views";
-import { savedFilters } from "./filters";
+import { savedFilters, type FilterPredicate, type SavedFilter } from "./filters";
 
 const NOW = new Date(2026, 6, 6, 12, 0, 0); // Mon 2026-07-06
 
@@ -49,22 +54,29 @@ describe("matchesView", () => {
     ).toBe(false);
   });
 
-  it("upcoming is any dated local task", () => {
-    expect(matchesView(task({ due: new Date(2026, 6, 9) }), { kind: "upcoming" }, NOW)).toBe(true);
+  it("upcoming is a local task due strictly after today", () => {
+    expect(matchesView(task({ due: new Date(2026, 6, 9) }), { kind: "upcoming" }, NOW)).toBe(true); // 3d ahead
+    expect(matchesView(task({ due: new Date(2026, 6, 7) }), { kind: "upcoming" }, NOW)).toBe(true); // tomorrow
+    // Due today or overdue belongs to Today now — Upcoming no longer overlaps.
+    expect(matchesView(task({ due: new Date(2026, 6, 6, 20) }), { kind: "upcoming" }, NOW)).toBe(false);
+    expect(matchesView(task({ due: new Date(2026, 6, 5) }), { kind: "upcoming" }, NOW)).toBe(false);
     expect(matchesView(task({}), { kind: "upcoming" }, NOW)).toBe(false);
     expect(
       matchesView(task({ due: new Date(2026, 6, 9), source: "github" }), { kind: "upcoming" }, NOW),
     ).toBe(false);
   });
 
-  it("label and source filter by exact value, regardless of source", () => {
+  it("label is local-by-default; includeSynced is the escape hatch; source is unconditional", () => {
     expect(matchesView(task({ labels: ["waiting"] }), { kind: "label", label: "waiting" }, NOW)).toBe(true);
     expect(matchesView(task({ labels: ["x"] }), { kind: "label", label: "waiting" }, NOW)).toBe(false);
-    // A synced task IS shown in its source view and in a label view it carries.
+    // A synced task carrying the label is hidden from the (local-by-default)
+    // label view …
+    const gh = task({ source: "github", labels: ["bug"] });
+    expect(matchesView(gh, { kind: "label", label: "bug" }, NOW)).toBe(false);
+    // … until includeSynced opts it in.
+    expect(matchesView(gh, { kind: "label", label: "bug", includeSynced: true }, NOW)).toBe(true);
+    // A source view always shows its synced feed.
     expect(matchesView(task({ source: "github" }), { kind: "source", source: "github" }, NOW)).toBe(true);
-    expect(
-      matchesView(task({ source: "github", labels: ["bug"] }), { kind: "label", label: "bug" }, NOW),
-    ).toBe(true);
   });
 
   it("a filter view resolves its SavedFilter and can promote synced items", () => {
@@ -92,6 +104,7 @@ describe("parseView / viewToSearch round trip", () => {
     { kind: "all" },
     { kind: "completed" },
     { kind: "label", label: "project:home" },
+    { kind: "label", label: "bug", includeSynced: true },
     { kind: "source", source: "github" },
     { kind: "filter", id: "abc123" },
     { kind: "ext", id: "gcal" },
@@ -107,6 +120,65 @@ describe("parseView / viewToSearch round trip", () => {
   it("defaults to today for an unknown/empty search", () => {
     expect(parseView("")).toEqual({ kind: "today" });
     expect(parseView("?view=bogus")).toEqual({ kind: "today" });
+  });
+
+  it("reads the label synced=1 escape-hatch flag", () => {
+    expect(parseView("?label=bug")).toEqual({ kind: "label", label: "bug", includeSynced: false });
+    expect(parseView("?label=bug&synced=1")).toEqual({ kind: "label", label: "bug", includeSynced: true });
+  });
+});
+
+describe("promotedSections & countView (showIn promotion)", () => {
+  const mk = (id: string, p: Parameters<typeof task>[0]): Task => ({ ...task(p), id }) as Task;
+  const f = (id: string, predicate: FilterPredicate, showIn: PromotableKind[]): SavedFilter => ({
+    id,
+    name: id,
+    predicate,
+    showIn,
+  });
+
+  it("promotes a filter's synced matches as a section, excluding base-view members", () => {
+    const baseLocal = mk("base", { due: new Date(2026, 6, 6, 20) }); // local, due today → Today base
+    const gh = mk("gh", { source: "github", labels: ["review"] }); // synced, promoted
+    const filters = [f("reviews", { source: "github", labelsAny: ["review"] }, ["today"])];
+    const secs = promotedSections([baseLocal, gh], "today", NOW, filters);
+    expect(secs).toHaveLength(1);
+    expect(secs[0].filter.id).toBe("reviews");
+    expect(secs[0].tasks.map((t) => t.id)).toEqual(["gh"]);
+  });
+
+  it("dedups against the base list — a base member never reappears in a section", () => {
+    const localDue = mk("ld", { due: new Date(2026, 6, 6, 20) }); // in Today's base AND matches hasDue
+    const secs = promotedSections([localDue], "today", NOW, [f("dated", { hasDue: true }, ["today"])]);
+    expect(secs).toHaveLength(0); // its only match is already in the base, so the section is empty
+  });
+
+  it("a task matching several promoting filters appears only in the first (filter order)", () => {
+    const gh = mk("gh", { source: "github", labels: ["review", "urgent"] });
+    const filters = [
+      f("first", { labelsAny: ["review"] }, ["inbox"]),
+      f("second", { labelsAny: ["urgent"] }, ["inbox"]),
+    ];
+    const secs = promotedSections([gh], "inbox", NOW, filters);
+    expect(secs).toHaveLength(1);
+    expect(secs[0].filter.id).toBe("first");
+    expect(secs[0].tasks.map((t) => t.id)).toEqual(["gh"]);
+  });
+
+  it("only promotes filters whose showIn includes the requested kind", () => {
+    const gh = mk("gh", { source: "github", labels: ["review"] });
+    const filters = [f("reviews", { source: "github" }, ["upcoming"])];
+    expect(promotedSections([gh], "today", NOW, filters)).toHaveLength(0);
+    expect(promotedSections([gh], "upcoming", NOW, filters)).toHaveLength(1);
+  });
+
+  it("countView adds promoted tasks to the base for a promotable list, ignores showIn elsewhere", () => {
+    const localDue = mk("ld", { due: new Date(2026, 6, 6, 20) }); // Today base
+    const gh = mk("gh", { source: "github", labels: ["review"] }); // promoted into Today
+    const filters = [f("reviews", { source: "github" }, ["today"])];
+    expect(countView([localDue, gh], { kind: "today" }, NOW, filters)).toBe(2);
+    // "all" isn't promotable — only the local task counts.
+    expect(countView([localDue, gh], { kind: "all" }, NOW, filters)).toBe(1);
   });
 });
 
@@ -157,5 +229,39 @@ describe("view prefs (readViewPrefs / writeViewPrefs)", () => {
       },
     });
     expect(() => writeViewPrefs({ kind: "today" }, DEFAULT_VIEW_PREFS)).not.toThrow();
+  });
+});
+
+describe("default (startup) view (readDefaultView / writeDefaultView)", () => {
+  const mem = new Map<string, string>();
+  const goodStorage = {
+    getItem: (k: string) => (mem.has(k) ? mem.get(k)! : null),
+    setItem: (k: string, v: string) => void mem.set(k, v),
+  };
+
+  beforeEach(() => {
+    mem.clear();
+    vi.stubGlobal("localStorage", goodStorage);
+  });
+
+  it("defaults to today when nothing is stored", () => {
+    expect(readDefaultView()).toBe("today");
+  });
+
+  it("round-trips a written value", () => {
+    writeDefaultView("inbox");
+    expect(readDefaultView()).toBe("inbox");
+  });
+
+  it("falls back to today for a garbage stored value", () => {
+    mem.set("taskd-default-view", "not-a-view");
+    expect(readDefaultView()).toBe("today");
+  });
+
+  it("parseView('') opens to the stored default view", () => {
+    writeDefaultView("all");
+    expect(parseView("")).toEqual({ kind: "all" });
+    // An explicit view param always wins over the stored default.
+    expect(parseView("?view=inbox")).toEqual({ kind: "inbox" });
   });
 });

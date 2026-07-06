@@ -72,4 +72,37 @@ test.describe("board view", () => {
     await expect(page.getByTestId("board")).toBeVisible();
     await expect(page.locator("header")).toHaveAttribute("data-view-board", "true");
   });
+
+  test("the group-by choice survives a reload", async ({ page, api }) => {
+    await seed(api, [{ title: "Task X", labels: ["project:home"] }]);
+    await expect(rows(page)).toHaveCount(1);
+    await toBoard(page);
+    await groupBy(page, "Project");
+    await expect(page.locator("header")).toHaveAttribute("data-view-group", "project");
+
+    await page.reload();
+    await expect(page.locator('[data-testid="conn-status"][data-connected="true"]')).toBeVisible();
+    await expect(page.getByTestId("board")).toBeVisible();
+    await expect(page.locator("header")).toHaveAttribute("data-view-board", "true");
+    await expect(page.locator("header")).toHaveAttribute("data-view-group", "project");
+  });
+
+  test("board/list layout is independent per view, not global", async ({ page, api }) => {
+    await seed(api, [{ title: "Task X" }]);
+    await expect(rows(page)).toHaveCount(1);
+
+    // Turn on board for the current (default, "All tasks") view.
+    await toBoard(page);
+    await expect(page.locator("header")).toHaveAttribute("data-view-board", "true");
+
+    // Navigate to Inbox — a different view must not inherit board mode.
+    await page.locator('[data-testid="side-item"][data-label="Inbox"]').click();
+    await expect(page.locator("header")).toHaveAttribute("data-view-board", "false");
+    await expect(page.getByTestId("board")).toHaveCount(0);
+
+    // Navigate back to All tasks — its board choice is still there.
+    await page.locator('[data-testid="side-item"][data-label="All tasks"]').click();
+    await expect(page.locator("header")).toHaveAttribute("data-view-board", "true");
+    await expect(page.getByTestId("board")).toBeVisible();
+  });
 });

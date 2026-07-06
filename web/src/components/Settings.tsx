@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useThemeSelector } from "../lib/hooks";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSnapshot, useThemeSelector } from "../lib/hooks";
 import type { Theme } from "../lib/themes";
-import { newAdminClient } from "../lib/client";
-import { notify } from "../lib/notify";
+import {
+  useExtensions,
+  useDaemonVersion,
+  toggleExtension,
+  extensionForSource,
+  type ExtInfo,
+} from "../lib/admin";
+import { notify, requestBrowserPermission } from "../lib/notify";
+import { readDefaultView, writeDefaultView, viewTitle, DEFAULT_VIEWS, type DefaultView } from "../lib/views";
 import { Icon } from "./icons";
-
-// Fixed app version. package.json ships 0.0.0 as a placeholder and lives
-// outside the typechecked `src` root, so the About line reads from this
-// constant rather than importing the manifest.
-const APP_VERSION = "0.1.0";
 
 /** The cog/gear glyph, matching the hand-authored icon set's stroke style.
  *  Lives here (not in the shared `icons` set, which this wave doesn't own) and
@@ -33,21 +35,16 @@ export function GearIcon({ size = 16, className }: { size?: number; className?: 
   );
 }
 
-/** A plain view of one extension, decoupled from the protobuf message so the
- *  local optimistic update is trivial. */
-interface ExtRow {
-  name: string;
-  hasSyncer: boolean;
-  hasWeb: boolean;
-  enabled: boolean;
-}
-
 export function Settings({
   onClose,
   onOpenShortcuts,
+  notifyDue,
+  onToggleNotifyDue,
 }: {
   onClose: () => void;
   onOpenShortcuts: () => void;
+  notifyDue: boolean;
+  onToggleNotifyDue: () => void;
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -114,8 +111,12 @@ export function Settings({
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <AppearanceSection />
+          {/* Functional settings first (Startup → Notifications → Extensions);
+              the 12-card theme catalog no longer buries them. */}
+          <GeneralSection />
+          <NotificationsSection enabled={notifyDue} onToggle={onToggleNotifyDue} />
           <ExtensionsSection />
+          <AppearanceSection />
           <AboutSection onOpenShortcuts={onOpenShortcuts} />
         </div>
       </div>
@@ -208,55 +209,113 @@ function ThemeCard({ theme, active, onSelect }: { theme: Theme; active: boolean;
   );
 }
 
+// --- General ------------------------------------------------------------------
+
+function GeneralSection() {
+  const [defaultView, setDefaultView] = useState<DefaultView>(readDefaultView);
+  return (
+    <section className="mb-7" data-testid="settings-general">
+      <SectionTitle hint="Which list a bare load (bookmark, PWA launch) opens to.">
+        Startup view
+      </SectionTitle>
+      <div className="flex flex-wrap gap-1 rounded-lg border border-line p-0.5" role="group" aria-label="Startup view">
+        {DEFAULT_VIEWS.map((v) => (
+          <button
+            key={v}
+            onClick={() => {
+              setDefaultView(v);
+              writeDefaultView(v);
+            }}
+            aria-pressed={defaultView === v}
+            data-testid="default-view-option"
+            data-view={v}
+            className={`rounded-md px-3 py-1 text-[12.5px] transition ${
+              defaultView === v ? "bg-accent/12 font-medium text-accent" : "text-mute hover:text-ink"
+            }`}
+          >
+            {viewTitle({ kind: v })}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// --- Notifications ------------------------------------------------------------
+
+function NotificationsSection({ enabled, onToggle }: { enabled: boolean; onToggle: () => void }) {
+  const supported = typeof Notification !== "undefined";
+  const denied = supported && Notification.permission === "denied";
+
+  const toggle = () => {
+    onToggle();
+    if (!enabled) void requestBrowserPermission();
+  };
+
+  return (
+    <section className="mb-7" data-testid="settings-notifications">
+      <SectionTitle hint="Get a browser notification the moment a task becomes due.">
+        Notifications
+      </SectionTitle>
+      <div className="flex items-center gap-3 rounded-lg border border-line px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-medium text-ink">Due-task reminders</div>
+          {!supported ? (
+            <div className="text-[11px] text-mute">Not supported in this browser.</div>
+          ) : denied ? (
+            <div className="text-[11px] text-warn">Blocked — allow notifications for this site to use it.</div>
+          ) : (
+            <div className="text-[11px] text-mute">{enabled ? "Enabled" : "Disabled"}</div>
+          )}
+        </div>
+        <button
+          role="switch"
+          aria-checked={enabled}
+          aria-label="Due-task reminders"
+          disabled={!supported || denied}
+          data-testid="notify-due-toggle"
+          onClick={toggle}
+          className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition ${
+            enabled ? "bg-accent" : "bg-line"
+          } ${!supported || denied ? "opacity-50" : ""}`}
+        >
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow ring-1 ring-black/5 transition ${
+              enabled ? "translate-x-4" : "translate-x-0.5"
+            }`}
+          />
+        </button>
+      </div>
+    </section>
+  );
+}
+
 // --- Extensions -------------------------------------------------------------
 
 function ExtensionsSection() {
-  const admin = useMemo(() => newAdminClient(), []);
-  const [exts, setExts] = useState<ExtRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { exts, loading, error, refresh } = useExtensions();
+  const snap = useSnapshot();
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [needsReload, setNeedsReload] = useState(false);
 
-  const load = useCallback(() => {
-    setError(null);
-    setExts(null);
-    let cancelled = false;
-    admin
-      .listExtensions({})
-      .then((res) => {
-        if (cancelled) return;
-        setExts(
-          res.extensions.map((e) => ({
-            name: e.name,
-            hasSyncer: e.hasSyncer,
-            hasWeb: e.hasWeb,
-            enabled: e.enabled,
-          })),
-        );
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setError("Couldn't reach the daemon.");
-        notify.error("Couldn't load extensions.");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [admin]);
+  // Distinct non-local source values (with counts) from the live replica, so
+  // each extension row can show which feeds it currently powers.
+  const sourceCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const t of snap.tasks.values()) {
+      if (t.source !== "") m.set(t.source, (m.get(t.source) ?? 0) + 1);
+    }
+    return m;
+  }, [snap]);
 
-  useEffect(() => load(), [load]);
-
-  const toggle = async (ext: ExtRow) => {
+  const toggle = async (ext: ExtInfo) => {
     const next = !ext.enabled;
     setBusy((s) => new Set(s).add(ext.name));
     try {
-      const res = await admin.setExtensionEnabled({ name: ext.name, enabled: next });
-      setExts((list) =>
-        list ? list.map((e) => (e.name === ext.name ? { ...e, enabled: next } : e)) : list,
-      );
+      const res = await toggleExtension(ext.name);
       // The syncer stop/start is immediate; an already-loaded web bundle only
       // fully (un)loads on reload, and restart_required means the same.
-      if (ext.hasWeb || res.restartRequired) setNeedsReload(true);
+      if (res.hasWeb || res.restartRequired) setNeedsReload(true);
     } catch {
       notify.error(`Couldn't ${next ? "enable" : "disable"} ${ext.name}.`);
     } finally {
@@ -276,12 +335,12 @@ function ExtensionsSection() {
 
       {error ? (
         <div className="flex items-center justify-between rounded-lg border border-warn/50 px-3 py-2 text-[12.5px] text-mute">
-          <span>{error}</span>
-          <button onClick={load} className="font-medium text-accent hover:underline">
+          <span>Couldn't reach the daemon.</span>
+          <button onClick={() => void refresh()} className="font-medium text-accent hover:underline">
             Retry
           </button>
         </div>
-      ) : exts === null ? (
+      ) : exts === null || loading ? (
         <div className="rounded-lg border border-line px-3 py-3 text-[12.5px] text-mute">
           Loading extensions…
         </div>
@@ -295,6 +354,9 @@ function ExtensionsSection() {
             <ExtensionRow
               key={ext.name}
               ext={ext}
+              sources={[...sourceCounts.entries()]
+                .filter(([s]) => extensionForSource(exts, s)?.name === ext.name)
+                .sort(([a], [b]) => a.localeCompare(b))}
               busy={busy.has(ext.name)}
               onToggle={() => toggle(ext)}
             />
@@ -328,7 +390,18 @@ function CapBadge({ children }: { children: React.ReactNode }) {
   );
 }
 
-function ExtensionRow({ ext, busy, onToggle }: { ext: ExtRow; busy: boolean; onToggle: () => void }) {
+function ExtensionRow({
+  ext,
+  sources,
+  busy,
+  onToggle,
+}: {
+  ext: ExtInfo;
+  /** [source, itemCount] pairs this extension currently feeds. */
+  sources: [string, number][];
+  busy: boolean;
+  onToggle: () => void;
+}) {
   return (
     <div
       className="flex items-center gap-3 rounded-lg border border-line px-3 py-2"
@@ -343,6 +416,15 @@ function ExtensionRow({ ext, busy, onToggle }: { ext: ExtRow; busy: boolean; onT
           {ext.hasWeb && <CapBadge>web</CapBadge>}
         </div>
         <div className="text-[11px] text-mute">{ext.enabled ? "Enabled" : "Disabled"}</div>
+        {sources.length > 0 && (
+          <ul className="mt-1 flex flex-col gap-0.5" data-testid="ext-sources">
+            {sources.map(([source, count]) => (
+              <li key={source} className="font-mono text-[10.5px] text-faint" data-source={source}>
+                {source} · {count} item{count === 1 ? "" : "s"}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
       <button
         role="switch"
@@ -370,6 +452,8 @@ function ExtensionRow({ ext, busy, onToggle }: { ext: ExtRow; busy: boolean; onT
 // --- About ------------------------------------------------------------------
 
 function AboutSection({ onOpenShortcuts }: { onOpenShortcuts: () => void }) {
+  const version = useDaemonVersion();
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
   return (
     <section data-testid="settings-about">
       <SectionTitle>About</SectionTitle>
@@ -378,12 +462,19 @@ function AboutSection({ onOpenShortcuts }: { onOpenShortcuts: () => void }) {
           <span className="font-mono text-[14px] font-medium">
             taskd<span className="text-accent">_</span>
           </span>
-          <span className="font-mono text-[11px] text-faint">v{APP_VERSION}</span>
+          <span className="font-mono text-[11px] text-faint" data-testid="app-version">
+            {version === "dev" ? "dev" : `v${version}`}
+          </span>
         </div>
         <p className="mt-1.5 text-[12.5px] text-mute">
           A local-first todo backend. This app talks to the taskd daemon running on your machine —
           your tasks never leave it.
         </p>
+        {origin && (
+          <p className="mt-1 font-mono text-[11px] text-faint" data-testid="daemon-address">
+            {origin}
+          </p>
+        )}
         <button
           onClick={onOpenShortcuts}
           className="mt-2.5 inline-flex items-center gap-1.5 text-[12.5px] font-medium text-accent hover:underline"

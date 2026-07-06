@@ -20,6 +20,10 @@ import type { TaskClient } from "./client";
 export interface Snapshot {
   readonly tasks: ReadonlyMap<string, Task>;
   readonly connected: boolean;
+  /** True from the first successful handshake onward (never resets). Lets the
+   *  UI tell a real drop (everConnected && !connected) apart from the normal
+   *  not-yet-connected moments of a cold load. */
+  readonly everConnected: boolean;
   /** id → time of the last change that arrived from OUTSIDE this client. */
   readonly pulses: ReadonlyMap<string, number>;
   readonly generation: number;
@@ -38,7 +42,19 @@ export interface TaskPatch {
    * `{ ...task.userData, timebox }`.
    */
   userData?: JsonObject | null;
+  /** Canonical RRULE subset; undefined = untouched, null or "" = stop recurring. */
+  recurrence?: string | null;
+  /** Parent task id; undefined = untouched, null or "" = detach to top-level. */
+  parentId?: string | null;
   expectedRevision?: bigint;
+}
+
+/** UpdateTask's authoritative result. `spawnedOccurrence` is set only when
+ *  completing a recurring task rolled the series forward — the frozen archive
+ *  copy, so callers can undo the completion precisely. */
+export interface UpdateResult {
+  task?: Task;
+  spawnedOccurrence?: Task;
 }
 
 const ECHO_MS = 4000;
@@ -50,6 +66,7 @@ export class TaskStore {
   private echoes = new Map<string, number>();
   private listeners = new Set<() => void>();
   private connected = false;
+  private everConnected = false;
   private generation = 0;
   private snap: Snapshot;
 
@@ -97,12 +114,21 @@ export class TaskStore {
 
   // --- mutations ---------------------------------------------------------
 
-  async create(fields: { title: string; notes?: string; labels?: string[]; due?: Date }): Promise<Task> {
+  async create(fields: {
+    title: string;
+    notes?: string;
+    labels?: string[];
+    due?: Date;
+    recurrence?: string;
+    parentId?: string;
+  }): Promise<Task> {
     const res = await this.client.createTask({
       title: fields.title,
       notes: fields.notes ?? "",
       labels: fields.labels ?? [],
       dueTime: fields.due ? timestampFromDate(fields.due) : undefined,
+      recurrence: fields.recurrence ?? "",
+      parentId: fields.parentId ?? "",
     });
     const task = res.task!;
     this.markEcho(task.id);
@@ -110,7 +136,7 @@ export class TaskStore {
     return task;
   }
 
-  async update(id: string, patch: TaskPatch): Promise<void> {
+  async update(id: string, patch: TaskPatch): Promise<UpdateResult> {
     const paths: string[] = [];
     const init: Record<string, unknown> = {};
     if (patch.title !== undefined) {
@@ -137,11 +163,26 @@ export class TaskStore {
       paths.push("user_data");
       init.userData = patch.userData ?? undefined;
     }
-    if (paths.length === 0) return;
+    if (patch.recurrence !== undefined) {
+      paths.push("recurrence");
+      init.recurrence = patch.recurrence ?? "";
+    }
+    if (patch.parentId !== undefined) {
+      paths.push("parent_id");
+      init.parentId = patch.parentId ?? "";
+    }
+    if (paths.length === 0) return {};
+
+    const cur = this.tasks.get(id);
+    // Completing a RECURRING task is NOT optimistic: the client can't compute
+    // the next due, and the server keeps the task ACTIVE (rolling it forward)
+    // rather than removing it. Skip the optimistic apply and let the awaited
+    // response land the advanced live task; the watch echo dedup handles the
+    // rest.
+    const recurringComplete = patch.completed === true && cur !== undefined && cur.recurrence !== "";
 
     // Optimistic application; the response or a refetch will correct it.
-    const cur = this.tasks.get(id);
-    if (cur) {
+    if (cur && !recurringComplete) {
       this.markEcho(id);
       const opt: Task = {
         ...cur,
@@ -155,6 +196,8 @@ export class TaskStore {
           ? { completedTime: patch.completed ? timestampFromDate(new Date()) : undefined }
           : null),
         ...(patch.userData !== undefined ? { userData: patch.userData ?? undefined } : null),
+        ...(patch.recurrence !== undefined ? { recurrence: patch.recurrence ?? "" } : null),
+        ...(patch.parentId !== undefined ? { parentId: patch.parentId ?? "" } : null),
       };
       this.place(opt);
       this.emit();
@@ -169,6 +212,7 @@ export class TaskStore {
       });
       this.markEcho(id);
       this.applyAuthoritative(res.task!);
+      return { task: res.task, spawnedOccurrence: res.spawnedOccurrence };
     } catch (err) {
       await this.resync(id);
       this.notifyError(err);
@@ -176,11 +220,14 @@ export class TaskStore {
     }
   }
 
-  /** The Completed view pages the server; the archive is not replicated. */
+  /** The Completed view pages the server; the archive is not replicated.
+   *  Ordered by completion time, not last-updated — editing a field on an
+   *  already-completed task (title, notes, due) shouldn't resurface it above
+   *  one completed more recently. */
   async listCompleted(pageToken = ""): Promise<{ tasks: Task[]; next: string }> {
     const res = await this.client.listTasks({
       filter: { completed: true },
-      orderBy: "updated desc",
+      orderBy: "completed desc",
       pageSize: 50,
       pageToken,
     });
@@ -288,6 +335,7 @@ export class TaskStore {
   private setConnected(v: boolean): void {
     if (this.connected === v) return;
     this.connected = v;
+    if (v) this.everConnected = true;
     this.emit();
   }
 
@@ -309,6 +357,7 @@ export class TaskStore {
     return {
       tasks: this.tasks,
       connected: this.connected,
+      everConnected: this.everConnected,
       pulses: this.pulses,
       generation: this.generation,
     };

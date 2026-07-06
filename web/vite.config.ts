@@ -23,6 +23,7 @@ export default defineConfig({
       "/task.TaskService": "http://127.0.0.1:8888",
       "/admin.AdminService": "http://127.0.0.1:8888",
       "/healthz": "http://127.0.0.1:8888",
+      "/version": "http://127.0.0.1:8888",
       "/ext": "http://127.0.0.1:8888",
     },
   },

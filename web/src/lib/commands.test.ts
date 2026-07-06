@@ -6,6 +6,8 @@ import {
   searchTaskCommands,
   type CommandContext,
 } from "./commands";
+import { savedViews } from "./savedviews";
+import { savedFilters } from "./filters";
 
 const task = (id: string, title: string, extra: Partial<Task> = {}): Task =>
   ({ id, title, notes: "", labels: [], source: "", ...extra }) as unknown as Task;
@@ -22,6 +24,7 @@ const ctx = (over: Partial<CommandContext> = {}): CommandContext => ({
   openTask: () => {},
   openAdd: () => {},
   saveCurrentView: () => {},
+  applySaved: () => {},
   extCommands: [],
   now: new Date(2026, 6, 6),
   ...over,
@@ -67,6 +70,32 @@ describe("buildStaticCommands", () => {
       ctx({ extCommands: [{ id: "x", title: "Do the thing", run: () => {} }] }),
     );
     expect(withExt.map((c) => c.title)).toContain("Do the thing");
+  });
+
+  it("includes 'Go to' commands for saved views and saved filters", () => {
+    savedViews.add({ name: "My View", view: { kind: "today" }, sort: "smart", board: false, groupBy: "priority" });
+    const view = savedViews.getSnapshot().find((v) => v.name === "My View")!;
+    const filter = savedFilters.add({ name: "My Filter", predicate: { source: "github" } });
+    try {
+      let applied: unknown;
+      let navigated: unknown;
+      const commands = buildStaticCommands(
+        ctx({ applySaved: (v) => (applied = v), navigate: (v) => (navigated = v) }),
+      );
+
+      const viewCmd = commands.find((c) => c.title === "Go to My View");
+      expect(viewCmd, "saved view should have a palette command").toBeTruthy();
+      viewCmd!.run();
+      expect(applied).toEqual(view);
+
+      const filterCmd = commands.find((c) => c.title === "Go to My Filter");
+      expect(filterCmd, "saved filter should have a palette command").toBeTruthy();
+      filterCmd!.run();
+      expect(navigated).toEqual({ kind: "filter", id: filter.id });
+    } finally {
+      savedViews.remove(view.id);
+      savedFilters.remove(filter.id);
+    }
   });
 });
 

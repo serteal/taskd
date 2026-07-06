@@ -29,6 +29,7 @@ export type IconName =
   | "search"
   | "list"
   | "board"
+  | "repeat"
   | "x";
 
 const PATHS: Record<IconName, ReactNode> = {
@@ -94,6 +95,7 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M9 3v18M15 3v18" />
     </>
   ),
+  repeat: <path d="M17 2l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3" />,
   x: <path d="M18 6L6 18M6 6l12 12" />,
 };
 

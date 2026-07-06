@@ -57,10 +57,23 @@ export function CompletedList() {
             <span className="min-w-0 flex-1 truncate text-[13.5px] text-mute line-through">
               {t.title}
             </span>
-            <span className="hidden gap-1 sm:flex">
+            <span className="hidden items-center gap-1 sm:flex">
+              {/* Origin chip: a closed synced item (e.g. a github issue) is
+                  otherwise indistinguishable from a local task in the archive. */}
+              {t.source !== "" && (
+                <span
+                  data-testid="source-chip"
+                  className="inline-flex items-center rounded-full border border-line bg-surface px-1.5 py-px font-mono text-[11px] leading-4 text-faint"
+                >
+                  {t.source}
+                </span>
+              )}
               {t.labels.slice(0, 3).map((l) => (
                 <Chip key={l} label={l} />
               ))}
+              {t.labels.length > 3 && (
+                <span className="font-mono text-[11px] text-faint">+{t.labels.length - 3}</span>
+              )}
             </span>
             {doneAt && (
               <span className="shrink-0 font-mono text-[11px] text-faint" title={fmtStamp(doneAt)}>

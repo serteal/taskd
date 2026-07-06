@@ -49,6 +49,29 @@ function spy(impl: (...args: unknown[]) => unknown = () => undefined): Spy {
   return fn;
 }
 
+// Faithful, dependency-free copies of the real api.dnd / api.format helpers
+// (web/src/lib/{dnd,format}.ts), so unit tests exercise the same behavior
+// buildAPI hands extensions. Kept inline to keep the testkit self-contained.
+const TASK_DRAG_MIME = "application/x-taskd-task";
+
+/** Reads a dragged task's id off a drop event — mirrors api.dnd.readTaskId. */
+function readTaskId(dt: DataTransfer): string | null {
+  if (!dt) return null;
+  return dt.getData(TASK_DRAG_MIME) || dt.getData("text/plain") || null;
+}
+
+/** proto Timestamp → Date (undefined-safe) — mirrors api.format.tsDate. */
+function tsDate(ts?: { seconds: bigint; nanos: number }): Date | undefined {
+  return ts ? new Date(Number(ts.seconds) * 1000 + Math.floor(ts.nanos / 1e6)) : undefined;
+}
+
+/** "project:home" → { ns: "project", val: "home" } — mirrors api.format.chipParts. */
+function chipParts(label: string): { ns?: string; val: string } {
+  const i = label.indexOf(":");
+  if (i <= 0 || i === label.length - 1) return { val: label };
+  return { ns: label.slice(0, i), val: label.slice(i + 1) };
+}
+
 // What register(api) hands back to us, captured for assertions.
 export interface Registered {
   presenters: any[];
@@ -56,6 +79,7 @@ export interface Registered {
   panels: any[];
   commands: any[];
   quickAddTokens: any[];
+  themes: any[];
 }
 
 export interface MockApi {
@@ -65,6 +89,7 @@ export interface MockApi {
   registerPanel: Spy;
   registerCommand: Spy;
   registerQuickAddToken: Spy;
+  registerTheme: Spy;
   icon: (name: string, opts?: unknown) => IconMarker;
   notify: { toast: Spy; error: Spy; browser: Spy };
   store: { update: Spy; create: Spy; delete: Spy };
@@ -72,8 +97,11 @@ export interface MockApi {
   getTasks: () => Task[];
   hooks: { useTasks: () => Task[]; useNow: () => Date };
   client: unknown;
-  dnd: { setTaskDrag: Spy; readTaskId: Spy };
-  format: { humanDue: Spy };
+  dnd: { mime: string; readTaskId: Spy };
+  format: {
+    tsDate: (ts?: { seconds: bigint; nanos: number }) => Date | undefined;
+    chipParts: (label: string) => { ns?: string; val: string };
+  };
 }
 
 /** A spy ExtensionAPI. Pass `{ tasks, now }` to control what the hooks read. */
@@ -86,6 +114,7 @@ export function mockApi(opts: { tasks?: Task[]; now?: Date } = {}): MockApi {
     panels: [],
     commands: [],
     quickAddTokens: [],
+    themes: [],
   };
   return {
     registered,
@@ -94,6 +123,7 @@ export function mockApi(opts: { tasks?: Task[]; now?: Date } = {}): MockApi {
     registerPanel: spy((p) => registered.panels.push(p)),
     registerCommand: spy((c) => registered.commands.push(c)),
     registerQuickAddToken: spy((t) => registered.quickAddTokens.push(t)),
+    registerTheme: spy((t) => registered.themes.push(t)),
     icon: (name) => ({ __icon: name }),
     notify: { toast: spy(), error: spy(), browser: spy() },
     store: { update: spy(() => Promise.resolve()), create: spy(() => Promise.resolve()), delete: spy(() => Promise.resolve()) },
@@ -101,7 +131,7 @@ export function mockApi(opts: { tasks?: Task[]; now?: Date } = {}): MockApi {
     getTasks: () => tasks,
     hooks: { useTasks: () => tasks, useNow: () => now },
     client: {},
-    dnd: { setTaskDrag: spy(), readTaskId: spy(() => null) },
-    format: { humanDue: spy(() => ({ text: "", tone: "later" })) },
+    dnd: { mime: TASK_DRAG_MIME, readTaskId: spy((dt) => readTaskId(dt as DataTransfer)) },
+    format: { tsDate, chipParts },
   };
 }

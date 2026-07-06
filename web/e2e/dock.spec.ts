@@ -8,7 +8,10 @@ test.describe("right dock", () => {
     const rail = page.getByTestId("calendar-rail");
     await expect(rail).toBeVisible(); // defaultOpen
 
-    const toggle = page.locator("header").getByRole("button", { name: "Today" });
+    // The button is now a generic icon (not the extension's own title as
+    // literal text) — same phrasing the command palette already uses for
+    // this action ("Toggle today panel").
+    const toggle = page.locator("header").getByRole("button", { name: "Toggle today panel" });
     await toggle.click();
     await expect(rail).toBeHidden();
     await toggle.click();
@@ -33,5 +36,26 @@ test.describe("right dock", () => {
 
     await page.getByRole("button", { name: "Close details" }).click();
     await expect(page.getByTestId("detail-panel")).toBeHidden();
+  });
+
+  // Detail and an extension panel now share one right-hand slot: opening a
+  // task's detail replaces the panel rather than adding a second column
+  // beside it, and closing detail restores the panel exactly as it was
+  // (openPanels is untouched the whole time).
+  test("opening a task's detail replaces an open panel in the same slot; closing it restores the panel", async ({
+    page,
+    api,
+  }) => {
+    await seed(api, [{ title: "Peek me" }]);
+    const rail = page.getByTestId("calendar-rail");
+    await expect(rail).toBeVisible(); // defaultOpen
+
+    await page.getByText("Peek me", { exact: true }).click();
+    await expect(page.getByTestId("detail-panel")).toBeVisible();
+    await expect(rail).toBeHidden();
+
+    await page.getByRole("button", { name: "Close details" }).click();
+    await expect(page.getByTestId("detail-panel")).toBeHidden();
+    await expect(rail).toBeVisible();
   });
 });

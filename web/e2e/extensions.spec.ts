@@ -1,5 +1,5 @@
 import { test, expect } from "./fixtures";
-import { rows, row, dialog } from "./helpers";
+import { rows, row, dialog, seed } from "./helpers";
 
 test.describe("extensions", () => {
   test.use({ mode: "extensions" });
@@ -54,6 +54,40 @@ test.describe("extensions", () => {
   });
 });
 
+// Detail and the extension calendar rail share the right side. On a wide
+// viewport (≥1440px) both show at once; below that the detail wins the slot.
+test.describe("detail + calendar rail coexistence", () => {
+  test.use({ mode: "extensions" });
+
+  test("at ≥1440px, opening a task detail keeps the calendar rail visible alongside it", async ({
+    page,
+    api,
+  }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await seed(api, [{ title: "Wide detail" }]);
+    const rail = page.getByTestId("calendar-rail");
+    await expect(rail).toBeVisible(); // defaultOpen
+
+    await page.getByText("Wide detail", { exact: true }).click();
+    await expect(page.getByTestId("detail-panel")).toBeVisible();
+    // The rail stays put — both rails coexist on a wide viewport.
+    await expect(rail).toBeVisible();
+  });
+
+  test("at the default viewport, detail still wins the slot and the rail hides", async ({
+    page,
+    api,
+  }) => {
+    await seed(api, [{ title: "Narrow detail" }]);
+    const rail = page.getByTestId("calendar-rail");
+    await expect(rail).toBeVisible();
+
+    await page.getByText("Narrow detail", { exact: true }).click();
+    await expect(page.getByTestId("detail-panel")).toBeVisible();
+    await expect(rail).toBeHidden();
+  });
+});
+
 // A presenter whose DetailSection throws must be isolated by the host, not
 // crash the app. This logs an intentional console.error.
 test.describe("extension error isolation", () => {
@@ -74,5 +108,44 @@ test.describe("extension error isolation", () => {
     // The rest of the detail still renders; only the extension section fails.
     await expect(detail).toContainText("This extension surface failed to render.");
     expect(consoleErrors.some((e) => e.includes("render error"))).toBeTruthy();
+  });
+});
+
+// registerTheme works like registerPanel/registerPresenter: an extension's
+// contribution shows up in Settings' picker (grouped under its own name)
+// alongside the built-in catalog.
+test.describe("extension-contributed theme", () => {
+  test.use({ mode: "extensions" });
+
+  test("appears in Settings' theme picker, grouped under the extension's name, and applies live", async ({
+    page,
+  }) => {
+    const html = page.locator("html");
+    await page.getByTestId("open-settings").click();
+
+    await expect(page.getByText("Testext", { exact: true })).toBeVisible(); // group heading
+    const testextTheme = page.locator('[data-testid="theme-option"][data-theme-id="testext-theme"]');
+    await expect(testextTheme).toContainText("Testext Theme");
+    await expect(testextTheme).toHaveAttribute("data-active", "false");
+
+    await testextTheme.click();
+    await expect(html).toHaveAttribute("data-theme", "testext-theme");
+    await expect(html).toHaveClass(/dark/);
+    await expect(testextTheme).toHaveAttribute("data-active", "true");
+  });
+
+  test("a saved extension theme survives a reload (re-applied once the extension registers it)", async ({
+    page,
+  }) => {
+    const html = page.locator("html");
+    await page.getByTestId("open-settings").click();
+    await page.locator('[data-testid="theme-option"][data-theme-id="testext-theme"]').click();
+    await expect(html).toHaveAttribute("data-theme", "testext-theme");
+
+    // First paint (before this extension's bundle loads) can only fall back to
+    // a built-in default; the saved id is re-applied once registerTheme runs.
+    await page.reload();
+    await expect(page.locator('[data-testid="conn-status"][data-connected="true"]')).toBeVisible();
+    await expect(html).toHaveAttribute("data-theme", "testext-theme");
   });
 });

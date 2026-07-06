@@ -1,19 +1,33 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNow, useSnapshot, useStore, useTheme, useView } from "./lib/hooks";
+import { useDueReminders, useNow, useSnapshot, useStore, useTheme, useView } from "./lib/hooks";
 import {
   viewTitle,
   viewToSearch,
   readViewPrefs,
   writeViewPrefs,
+  subscribeViewPrefs,
+  countView,
+  isPromotable,
+  promotedSections,
   type SortMode,
   type BoardGroupBy,
 } from "./lib/views";
 import { endOfDay } from "./lib/format";
+import {
+  readSidebarCollapsed,
+  writeSidebarCollapsed,
+  readOnboardingDismissed,
+  writeOnboardingDismissed,
+} from "./lib/layout";
+import { useExtensions, isSourcePaused, refreshExtensions, refreshDaemonVersion } from "./lib/admin";
+import { notify, readDueRemindersEnabled, writeDueRemindersEnabled } from "./lib/notify";
 import { completeTask } from "./lib/actions";
+import { undoLast } from "./lib/undo";
 import { buildAPI, registry, uiBridge, useRegistry } from "./lib/extensions";
 import type { CommandContext } from "./lib/commands";
 import { savedViews, type SavedView } from "./lib/savedviews";
-import type { SavedFilter } from "./lib/filters";
+import { useSavedFilters, type SavedFilter } from "./lib/filters";
+import { flattenSections, nestSections } from "./lib/nest";
 import { Sidebar } from "./components/Sidebar";
 import { FilterBuilder } from "./components/FilterBuilder";
 import { TaskList, visibleTasks } from "./components/TaskList";
@@ -29,13 +43,14 @@ import { Settings } from "./components/Settings";
 import { BulkBar } from "./components/BulkBar";
 import { ContextMenu, TaskContextMenu } from "./components/ContextMenu";
 import { ViewMenu } from "./components/ViewMenu";
+import { Icon } from "./components/icons";
 import { completeMany } from "./lib/actions";
 
 export default function App() {
   const store = useStore();
   const snap = useSnapshot();
   const now = useNow();
-  const [dark, toggleTheme] = useTheme();
+  const [, toggleTheme] = useTheme();
   const [view, navigate] = useView();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -47,7 +62,15 @@ export default function App() {
   const [adding, setAdding] = useState<NewTaskInitial | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  // The "Save this view as…" naming modal (replaces a native window.prompt).
+  const [saveViewOpen, setSaveViewOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
+  const [notifyDue, setNotifyDue] = useState(readDueRemindersEnabled);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(readOnboardingDismissed);
+  // Shared extension state (drives source-view pause banners; also feeds the
+  // sidebar's paused pills through the same store).
+  const { exts } = useExtensions();
   // The filter builder overlay. null = closed; `{}` = new; `{ editing }` = edit.
   const [filterBuilder, setFilterBuilder] = useState<{ editing?: SavedFilter } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -55,7 +78,26 @@ export default function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   // Right-click context menu: which task, anchored at the cursor.
   const [ctxMenu, setCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  // Parents whose nested subtasks are hidden — session state only, on purpose.
+  const [collapsedParents, setCollapsedParents] = useState<Set<string>>(new Set());
   const regVersion = useRegistry();
+
+  const toggleCollapsed = (id: string) => {
+    // Collapsing while the selection (or the open detail) sits on one of the
+    // children being hidden would strand the keyboard — j/k would jump to the
+    // first row and x would no-op. Follow to the parent instead.
+    if (!collapsedParents.has(id)) {
+      const strands = (tid: string | null) =>
+        tid !== null && snap.tasks.get(tid)?.parentId === id;
+      if (strands(selectedId)) setSelectedId(id);
+      if (strands(openId)) setOpenId(id);
+    }
+    setCollapsedParents((cur) => {
+      const next = new Set(cur);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
 
   // Which registered panels are open. Seeded from each panel's defaultOpen
   // the first time it appears; the user's toggle wins thereafter.
@@ -83,6 +125,29 @@ export default function App() {
     return () => ctl.abort();
   }, [store]);
 
+  // A RE-connect may mean the daemon restarted (a new build, changed extension
+  // state) — refresh the admin stores on the disconnected→connected
+  // transition. The initial connect is excluded on purpose: both stores
+  // already fetch once per session on their first subscriber.
+  const conn = useRef({ prev: false, everTrue: false });
+  useEffect(() => {
+    const c = conn.current;
+    if (snap.connected && !c.prev && c.everTrue) {
+      void refreshExtensions();
+      void refreshDaemonVersion();
+    }
+    if (snap.connected) c.everTrue = true;
+    c.prev = snap.connected;
+  }, [snap.connected]);
+
+  // Cold loads start disconnected for a few hundred ms; only after this mount
+  // grace does an empty, never-connected replica earn the can't-reach state.
+  const [graceElapsed, setGraceElapsed] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setGraceElapsed(true), 1500);
+    return () => clearTimeout(t);
+  }, []);
+
   // Extensions open the host detail panel through this bridge.
   useEffect(() => {
     uiBridge.openTask = (id) => {
@@ -99,10 +164,30 @@ export default function App() {
     setOpenId(id);
   };
 
-  const tasks =
+  const filters = useSavedFilters();
+  // The base (local) working set, then the promoted filter sections for a
+  // built-in list. The combined `tasks` array is what keyboard j/k, bulk-select
+  // and board mode consume — so promoted tasks are reachable and grouped there
+  // too; TaskList in list mode gets the base + sections separately so it can
+  // render each promoted section under its own header.
+  const baseTasks =
     view.kind === "completed" || view.kind === "ext"
       ? []
       : visibleTasks(snap.tasks.values(), view, now, sort);
+  const promotedSecs = isPromotable(view)
+    ? promotedSections([...snap.tasks.values()], view.kind, now, filters)
+    : [];
+  // Subtask nesting (lib/nest): the grouped list nests a child under its
+  // in-view parent; manual sort and board mode stay flat. The SAME flattened
+  // order feeds `tasks`, so j/k traversal matches the rendered order exactly —
+  // and a collapsed parent's children leave the keyboard order too.
+  const nestSecs = nestSections(baseTasks, {
+    grouped: !board && sort !== "manual",
+    now,
+    collapsed: collapsedParents,
+    titleOf: (id) => snap.tasks.get(id)?.title,
+  });
+  const tasks = [...flattenSections(nestSecs), ...promotedSecs.flatMap((s) => s.tasks)];
   const selectedTasks = [...selected].map((id) => snap.tasks.get(id)).filter((t): t is NonNullable<typeof t> => !!t);
 
   // Clicking a row: plain = open detail (clears selection); ⌘/Ctrl = toggle in
@@ -159,6 +244,22 @@ export default function App() {
     writeViewPrefs(view, { sort, board, groupBy });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewKey, sort, board, groupBy]);
+  // Another tab/window rewrote the prefs map (cross-tab `storage` event):
+  // re-hydrate this view's copy so both documents converge.
+  useEffect(
+    () =>
+      subscribeViewPrefs(() => {
+        const p = readViewPrefs(view);
+        setSort(p.sort);
+        setBoard(p.board);
+        setGroupBy(p.groupBy);
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [viewKey],
+  );
+  useEffect(() => writeSidebarCollapsed(sidebarCollapsed), [sidebarCollapsed]);
+  useEffect(() => writeDueRemindersEnabled(notifyDue), [notifyDue]);
+  useDueReminders(notifyDue);
 
   const applySaved = (v: SavedView) => {
     setOpenId(null);
@@ -170,10 +271,7 @@ export default function App() {
     setBoard(v.board);
     setGroupBy(v.groupBy);
   };
-  const saveCurrentView = () => {
-    const name = window.prompt("Save this view as:");
-    if (name?.trim()) savedViews.add({ name: name.trim(), view, sort, board, groupBy });
-  };
+  const saveCurrentView = () => setSaveViewOpen(true);
   const openTask = openId !== null ? snap.tasks.get(openId) : undefined;
   const extView = view.kind === "ext" ? registry.viewById(view.id) : undefined;
   const api = useMemo(() => buildAPI(store), [store]);
@@ -214,12 +312,13 @@ export default function App() {
       openAdd,
       openSettings: () => setSettingsOpen(true),
       saveCurrentView,
+      applySaved,
       extCommands: registry.commands,
       now,
     }),
     // regVersion covers extension command/panel registration; view/now/sel change often.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [snap, store, selectedId, view, now, regVersion, sort, board, groupBy, dark],
+    [snap, store, selectedId, view, now, regVersion, sort, board, groupBy],
   );
 
   // Keyboard: list navigation stays out of the way of typing.
@@ -246,6 +345,12 @@ export default function App() {
         if (e.key === "Escape") setHelpOpen(false);
         return;
       }
+      if (saveViewOpen) {
+        // The naming modal owns the keyboard; its card handles Enter/Escape,
+        // but catch Escape here too so a blurred overlay still closes.
+        if (e.key === "Escape") setSaveViewOpen(false);
+        return;
+      }
       if (adding) {
         if (e.key === "Escape") setAdding(null);
         return;
@@ -262,6 +367,17 @@ export default function App() {
           return;
         }
         setOpenId(null);
+        return;
+      }
+      // ⌘Z / Ctrl+Z: global undo. Never while editing text — native undo must
+      // keep working inside inputs/textareas/contenteditable — and never with
+      // Shift (that's redo). Modal overlays already returned above, so this only
+      // runs on the bare app surface (detail panel may be open, focus outside it).
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z") {
+        if (typing || el.isContentEditable) return;
+        e.preventDefault();
+        const undone = undoLast();
+        notify.toast({ kind: "info", message: undone ? `Undid ${undone.label}` : "Nothing to undo" });
         return;
       }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -332,10 +448,40 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tasks, selectedId, openId, store, adding, paletteOpen, helpOpen, settingsOpen, filterBuilder, view, now, selected, selectedTasks]);
+  }, [tasks, selectedId, openId, store, adding, paletteOpen, helpOpen, saveViewOpen, settingsOpen, filterBuilder, view, now, selected, selectedTasks]);
 
   const showSort = view.kind !== "completed" && view.kind !== "ext";
-  const firstRun = snap.connected && snap.tasks.size === 0;
+  // The header count comes from the same single source of truth as the
+  // sidebar badge (countView over the full snapshot), so collapse and other
+  // presentation state can never make the two disagree.
+  const viewCount = countView([...snap.tasks.values()], view, now, filters);
+  const emptyReplica = snap.tasks.size === 0;
+  // An empty replica splits four ways: a startup blank (never connected, mount
+  // grace still running — a cold load's first few hundred ms must not flash
+  // "can't reach the daemon"), the explicit can't-reach state (a real drop, or
+  // never connected once the grace lapses), the first-run onboarding card
+  // (connected, never dismissed), or the plain empty state (connected,
+  // onboarding dismissed). First-run keys on LOCAL tasks, not the whole
+  // replica: installing extensions up front (the install.sh path) fills the
+  // replica with synced items before the user has added a single task of
+  // their own — exactly who the onboarding is for.
+  const startupBlank = !snap.connected && emptyReplica && !snap.everConnected && !graceElapsed;
+  const disconnectedEmpty = !snap.connected && emptyReplica && !startupBlank;
+  // First-run surfaces claim only the built-in LOCAL lists: an explicitly
+  // opened source/filter/label view must show its own content (a source view
+  // full of synced items is exactly where onboarding must not sit on top).
+  const firstRunSurface =
+    view.kind === "inbox" || view.kind === "today" || view.kind === "upcoming" || view.kind === "all";
+  const firstRun =
+    firstRunSurface && snap.connected && ![...snap.tasks.values()].some((t) => t.source === "");
+  // Source-view pause banner: this source's owning extension is disabled.
+  const sourcePaused = view.kind === "source" && isSourcePaused(exts, view.source);
+  // For a label view: how many synced tasks also carry the label. Drives the
+  // header's escape-hatch chip ("+N synced" / "hide synced"); 0 → no chip.
+  const labelSyncedCount =
+    view.kind === "label"
+      ? [...snap.tasks.values()].filter((t) => t.source !== "" && t.labels.includes(view.label)).length
+      : 0;
 
   return (
     <div className="flex h-full flex-col">
@@ -347,9 +493,9 @@ export default function App() {
           onApplySaved={applySaved}
           onNewFilter={() => setFilterBuilder({})}
           onEditFilter={(f) => setFilterBuilder({ editing: f })}
-          dark={dark}
-          onToggleTheme={toggleTheme}
           onOpenSettings={() => setSettingsOpen(true)}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => setSidebarCollapsed((c) => !c)}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
@@ -362,7 +508,23 @@ export default function App() {
             <h1 className="text-[19px] font-semibold tracking-tight">
               {extView ? extView.title : viewTitle(view)}
             </h1>
-            {showSort && <span className="font-mono text-[12px] text-faint">{tasks.length}</span>}
+            {showSort && (
+              <span data-testid="view-count" className="font-mono text-[12px] text-faint">
+                {viewCount}
+              </span>
+            )}
+            {view.kind === "label" && labelSyncedCount > 0 && (
+              <button
+                onClick={() =>
+                  (setOpenId(null),
+                  navigate({ kind: "label", label: view.label, includeSynced: !view.includeSynced }))
+                }
+                data-testid="label-synced-toggle"
+                className="rounded-full border border-line px-2 py-px font-mono text-[11px] text-mute hover:border-mute hover:text-ink"
+              >
+                {view.includeSynced ? "hide synced" : `+${labelSyncedCount} synced`}
+              </button>
+            )}
             <div className="ml-auto flex items-center gap-2">
               {showSort && (
                 <ViewMenu
@@ -378,17 +540,36 @@ export default function App() {
                 <button
                   key={p.id}
                   onClick={() => togglePanel(p.id)}
-                  className={`rounded-md border px-2 py-1 text-[12.5px] ${
+                  aria-label={`Toggle ${p.title.toLowerCase()} panel`}
+                  title={p.title}
+                  className={`rounded-md border p-1.5 ${
                     openPanels.has(p.id)
                       ? "border-accent/50 text-accent"
                       : "border-line text-mute hover:border-mute hover:text-ink"
                   }`}
                 >
-                  {p.title}
+                  <Icon name="panel" size={14} />
                 </button>
               ))}
             </div>
           </header>
+
+          {sourcePaused && (
+            <div
+              data-testid="source-paused-banner"
+              className="mx-3 mb-2 flex items-center gap-2 rounded-md border border-warn/40 bg-warn/[.06] px-3 py-1.5 text-[12.5px] text-mute"
+            >
+              <span className="min-w-0 flex-1">
+                This source is paused — items are no longer syncing.
+              </span>
+              <button
+                onClick={() => setSettingsOpen(true)}
+                className="shrink-0 font-medium text-accent hover:underline"
+              >
+                Re-enable it in Settings
+              </button>
+            </div>
+          )}
 
           <div className={`min-h-0 flex-1 ${board && showSort ? "overflow-hidden" : "overflow-y-auto"}`}>
             {view.kind === "ext" ? (
@@ -403,24 +584,24 @@ export default function App() {
               )
             ) : view.kind === "completed" ? (
               <CompletedList />
+            ) : startupBlank ? (
+              // Still inside the cold-load grace: render the plain empty area,
+              // not a premature "can't reach the daemon".
+              <div className="h-full" aria-hidden />
+            ) : disconnectedEmpty ? (
+              <DisconnectedState />
+            ) : firstRun && !onboardingDismissed ? (
+              <OnboardingCard
+                onAdd={openAdd}
+                onOpenSettings={() => setSettingsOpen(true)}
+                onOpenShortcuts={() => setHelpOpen(true)}
+                onDismiss={() => {
+                  writeOnboardingDismissed(true);
+                  setOnboardingDismissed(true);
+                }}
+              />
             ) : firstRun ? (
-              <div className="flex h-full flex-col items-center justify-center px-6 text-center">
-                <div className="font-mono text-[15px] text-accent">taskd_</div>
-                <p className="mt-2 max-w-xs text-[13px] text-mute">
-                  No tasks yet. Add your first one — everything else (labels, projects, the
-                  calendar, extensions) grows from there.
-                </p>
-                <button
-                  onClick={openAdd}
-                  className="mt-4 rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-white"
-                >
-                  + Add your first task
-                </button>
-                <p className="mt-3 font-mono text-[11px] text-faint">
-                  or press <kbd className="rounded border border-line px-1">q</kbd> ·{" "}
-                  <kbd className="rounded border border-line px-1">?</kbd> for shortcuts
-                </p>
-              </div>
+              <EmptyState onAdd={openAdd} />
             ) : board ? (
               <BoardView
                 tasks={tasks}
@@ -432,13 +613,17 @@ export default function App() {
               />
             ) : (
               <TaskList
-                tasks={tasks}
+                tasks={baseTasks}
+                sections={nestSecs}
                 view={view}
                 now={now}
                 sort={sort}
                 selectedId={selectedId}
                 bulkSelected={selected}
                 editingId={editingId}
+                extraSections={promotedSecs}
+                collapsed={collapsedParents}
+                onToggleCollapse={toggleCollapsed}
                 onSelect={setSelectedId}
                 onActivate={activateRow}
                 onManualReorder={() => setSort("manual")}
@@ -460,17 +645,27 @@ export default function App() {
           </div>
         </main>
 
+        {/* Right-hand rails: an open task's detail sits adjacent to the main
+            list; extension panels stay outermost right. On a wide viewport
+            (≥1440px) BOTH show at once; below that the detail wins the slot and
+            the panels hide (detail-exclusive, the historical behaviour).
+            openPanels is untouched the whole time — the panels stay mounted (a
+            CSS hide, not an unmount) so they reappear exactly as they were when
+            detail closes or the viewport widens. */}
+        {openTask && (
+          <DetailPanel task={openTask} onClose={() => setOpenId(null)} onOpenTask={openTaskById} />
+        )}
         {panels.map((p) => (
-          <div key={p.id} className="hidden shrink-0 md:block" style={{ width: p.width ?? 300 }}>
+          <div
+            key={p.id}
+            className={`shrink-0 ${openTask ? "hidden min-[1440px]:block" : "hidden md:block"}`}
+            style={{ width: p.width ?? 300 }}
+          >
             <ExtensionBoundary name={p.id}>
               <p.Component api={api} />
             </ExtensionBoundary>
           </div>
         ))}
-
-        {/* The detail "peek" is its own column — it pushes the layout rather
-            than overlapping the calendar panel. */}
-        {openTask && <DetailPanel task={openTask} onClose={() => setOpenId(null)} />}
       </div>
 
       {selectedTasks.length > 0 && (
@@ -534,6 +729,15 @@ export default function App() {
           }}
         />
       )}
+      {saveViewOpen && (
+        <SaveViewDialog
+          onClose={() => setSaveViewOpen(false)}
+          onSave={(name) => {
+            savedViews.add({ name, view, sort, board, groupBy });
+            setSaveViewOpen(false);
+          }}
+        />
+      )}
       {adding && <NewTaskOverlay now={now} initial={adding} onClose={() => setAdding(null)} />}
       {paletteOpen && <CommandPalette ctx={cmdCtx} onClose={() => setPaletteOpen(false)} />}
       {helpOpen && <ShortcutsHelp onClose={() => setHelpOpen(false)} />}
@@ -544,9 +748,225 @@ export default function App() {
             setSettingsOpen(false);
             setHelpOpen(true);
           }}
+          notifyDue={notifyDue}
+          onToggleNotifyDue={() => setNotifyDue((v) => !v)}
         />
       )}
       <ToastStack />
+    </div>
+  );
+}
+
+// The "Save this view as…" naming modal. A small centered dialog matching
+// FilterBuilder's overlay/dialog styling: autofocused name input, Enter saves,
+// Escape cancels. App gates the global keyboard handler while it is open.
+function SaveViewDialog({
+  onSave,
+  onClose,
+}: {
+  onSave: (name: string) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => inputRef.current?.focus(), []);
+  const canSave = name.trim() !== "";
+  const save = () => {
+    if (canSave) onSave(name.trim());
+  };
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-start justify-center bg-black/30 px-4 pt-[12vh]"
+      onMouseDown={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Save view"
+        data-testid="save-view-dialog"
+        className="w-[420px] max-w-full overflow-hidden rounded-xl border border-line bg-surface shadow-2xl"
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onClose();
+          if (e.key === "Enter" && canSave) save();
+        }}
+      >
+        <div className="flex items-baseline justify-between border-b border-line px-4 py-3">
+          <h2 className="text-[15px] font-semibold">Save view</h2>
+          <button onClick={onClose} className="font-mono text-[12px] text-mute hover:text-ink">
+            esc
+          </button>
+        </div>
+        <div className="p-4">
+          <input
+            ref={inputRef}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="View name (e.g. Focus)"
+            aria-label="View name"
+            className="w-full bg-transparent text-[17px] font-semibold leading-tight placeholder:text-faint focus:outline-none"
+          />
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-line px-4 py-2.5">
+          <button
+            onClick={onClose}
+            className="rounded-md bg-ink/[.06] px-3 py-1.5 text-[13px] font-medium text-ink hover:bg-ink/[.1] dark:bg-ink/[.1] dark:hover:bg-ink/[.16]"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={save}
+            disabled={!canSave}
+            className="rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// The plain empty state — the fallback once onboarding is dismissed, and the
+// invitation to add a first task. Kept minimal; the onboarding card is the
+// richer first-run surface built on top of it.
+function EmptyState({ onAdd }: { onAdd: () => void }) {
+  return (
+    <div
+      data-testid="empty-state"
+      className="flex h-full flex-col items-center justify-center px-6 text-center"
+    >
+      <div className="font-mono text-[15px] text-accent">taskd_</div>
+      <p className="mt-2 max-w-xs text-[13px] text-mute">
+        No tasks yet. Add your first one — everything else (labels, projects, the calendar,
+        extensions) grows from there.
+      </p>
+      <button
+        onClick={onAdd}
+        className="mt-4 rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-white"
+      >
+        + Add your first task
+      </button>
+      <p className="mt-3 font-mono text-[11px] text-faint">
+        or press <kbd className="rounded border border-line px-1">q</kbd> ·{" "}
+        <kbd className="rounded border border-line px-1">?</kbd> for shortcuts
+      </p>
+    </div>
+  );
+}
+
+// First-run onboarding: a dismissible three-step card. Dismissal persists
+// (localStorage) and falls back to the plain EmptyState. Install copy stays
+// browser-generic (Chrome "Install", Safari/others "Add to Dock").
+function OnboardingCard({
+  onAdd,
+  onOpenSettings,
+  onOpenShortcuts,
+  onDismiss,
+}: {
+  onAdd: () => void;
+  onOpenSettings: () => void;
+  onOpenShortcuts: () => void;
+  onDismiss: () => void;
+}) {
+  const steps: { n: number; title: string; body: React.ReactNode }[] = [
+    {
+      n: 1,
+      title: "Add your first task",
+      body: (
+        <>
+          Press <kbd className="rounded border border-line px-1 font-mono">q</kbd> — or use the
+          button below.
+        </>
+      ),
+    },
+    {
+      n: 2,
+      title: "Install it as an app",
+      body: <>Open your browser's menu → Install / Add to Dock for a standalone window.</>,
+    },
+    {
+      n: 3,
+      title: "Connect your sources",
+      body: (
+        <>
+          Pull in calendars and issues from{" "}
+          <button onClick={onOpenSettings} className="font-medium text-accent hover:underline">
+            Settings → Extensions
+          </button>
+          .
+        </>
+      ),
+    },
+  ];
+  return (
+    <div className="flex h-full items-center justify-center px-6">
+      <div
+        data-testid="onboarding"
+        className="relative w-full max-w-md rounded-xl border border-line bg-surface p-5 shadow-sm"
+      >
+        <button
+          onClick={onDismiss}
+          aria-label="Dismiss onboarding"
+          data-testid="onboarding-dismiss"
+          className="absolute right-2.5 top-2 rounded px-1.5 font-mono text-[15px] leading-none text-mute hover:text-ink"
+        >
+          ×
+        </button>
+
+        <div className="font-mono text-[15px] text-accent">taskd_</div>
+        <h2 className="mt-1 text-[15px] font-semibold tracking-tight text-ink">
+          Welcome — let's get you set up
+        </h2>
+
+        <ol className="mt-4 flex flex-col gap-3">
+          {steps.map((s) => (
+            <li key={s.n} className="flex gap-3">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/12 font-mono text-[11px] font-medium text-accent">
+                {s.n}
+              </span>
+              <div className="min-w-0">
+                <div className="text-[13px] font-medium text-ink">{s.title}</div>
+                <div className="text-[12.5px] leading-5 text-mute">{s.body}</div>
+              </div>
+            </li>
+          ))}
+        </ol>
+
+        <button
+          onClick={onAdd}
+          className="mt-5 rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-white"
+        >
+          + Add your first task
+        </button>
+
+        <p className="mt-3 text-[11px] text-faint">
+          Press{" "}
+          <button onClick={onOpenShortcuts} className="font-mono text-accent hover:underline">
+            ?
+          </button>{" "}
+          anytime for keyboard shortcuts.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// Explicit "the daemon is unreachable" state, shown when the replica is empty
+// AND disconnected — instead of a silently blank list. The store reconnects on
+// its own, hence the muted retry note.
+function DisconnectedState() {
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  return (
+    <div
+      data-testid="disconnected-empty"
+      className="flex h-full flex-col items-center justify-center px-6 text-center"
+    >
+      <span className="inline-block h-2 w-2 rounded-full bg-warn" aria-hidden />
+      <h2 className="mt-3 text-[14px] font-semibold text-ink">Can't reach the daemon</h2>
+      <p className="mt-1.5 font-mono text-[12px] text-mute">{origin}</p>
+      <p className="mt-2 max-w-xs text-[13px] text-mute">Is taskd running?</p>
+      <p className="mt-3 font-mono text-[11px] text-faint">retrying…</p>
     </div>
   );
 }

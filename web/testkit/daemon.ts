@@ -49,6 +49,10 @@ export interface Task {
   externalRef: string;
   externalData?: Record<string, unknown>;
   userData?: Record<string, unknown>;
+  /** Canonical RRULE subset; absent/empty for a one-off. */
+  recurrence?: string;
+  /** Parent task id; absent/empty for a top-level task. */
+  parentId?: string;
   revision: string;
 }
 
@@ -61,7 +65,14 @@ export interface ExternalTaskInit {
 }
 
 export interface Api {
-  createTask(t: { title: string; notes?: string; labels?: string[]; due?: Date }): Promise<Task>;
+  createTask(t: {
+    title: string;
+    notes?: string;
+    labels?: string[];
+    due?: Date;
+    recurrence?: string;
+    parentId?: string;
+  }): Promise<Task>;
   upsertExternal(
     source: string,
     tasks: ExternalTaskInit[],
@@ -91,6 +102,8 @@ export function makeApi(baseURL: string): Api {
         notes: t.notes,
         labels: t.labels,
         dueTime: t.due?.toISOString(),
+        recurrence: t.recurrence,
+        parentId: t.parentId,
       }).then((r) => r.task),
     upsertExternal: (source, tasks, opts) =>
       call("UpsertExternalTasks", {
@@ -184,8 +197,13 @@ export async function startDaemon(
 
   const port = await freePort();
   let stderr = "";
-  const proc: ChildProcess = spawn(TASKD, ["-dir", dir, "-listen", `127.0.0.1:${port}`], {
+  // -no-open + TASKD_NO_OPEN: every spawned daemon is a first run (fresh temp
+  // dir), and first runs auto-open a browser — one window per test would bury
+  // the machine. Both belt and braces so neither flag drift nor an older
+  // binary can bring the windows back.
+  const proc: ChildProcess = spawn(TASKD, ["-dir", dir, "-listen", `127.0.0.1:${port}`, "-no-open"], {
     stdio: ["ignore", "ignore", "pipe"],
+    env: { ...process.env, TASKD_NO_OPEN: "1" },
   });
   proc.stderr?.on("data", (d) => (stderr += d.toString()));
 

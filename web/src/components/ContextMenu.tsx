@@ -223,19 +223,28 @@ export function TaskContextMenu({
           Rename
         </CItem>
       )}
-      <CItem
-        icon={done ? "circle" : "check"}
-        onClick={() => {
-          if (done) void store.update(task.id, { completed: false }).catch(() => {});
-          else completeTask(store, task);
-          close();
-        }}
-      >
-        {done ? "Reopen" : "Complete"}
-      </CItem>
-      <CItem icon="calendar" chevron onClick={() => setPane("schedule")}>
-        Schedule…
-      </CItem>
+      {/* Completion is source-owned on synced tasks — no Complete/Reopen for
+          them (the row checkbox, detail buttons and palette guard the same). */}
+      {!synced && (
+        <CItem
+          icon={done ? "circle" : "check"}
+          onClick={() => {
+            if (done) void store.update(task.id, { completed: false }).catch(() => {});
+            else completeTask(store, task);
+            close();
+          }}
+        >
+          {done ? "Reopen" : "Complete"}
+        </CItem>
+      )}
+      {/* Due is source-owned on synced tasks — no Schedule… (the next sync
+          reverts any UI write); Priority / Add label / Plan today stay, since
+          labels and user_data are user-owned. */}
+      {!synced && (
+        <CItem icon="calendar" chevron onClick={() => setPane("schedule")}>
+          Schedule…
+        </CItem>
+      )}
       <CItem icon="flag" chevron onClick={() => setPane("priority")}>
         Priority
       </CItem>

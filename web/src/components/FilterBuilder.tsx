@@ -6,6 +6,7 @@ import {
   type FilterPredicate,
   type SavedFilter,
 } from "../lib/filters";
+import type { PromotableKind } from "../lib/views";
 import { Chip } from "./Chip";
 import { Popover } from "./Popover";
 import { LabelMenu } from "./pickers";
@@ -47,7 +48,10 @@ export function FilterBuilder({
     p.dueWithinDays !== undefined ? "within" : p.hasDue ? "has" : "any",
   );
   const [dueDays, setDueDays] = useState<number>(p.dueWithinDays ?? 7);
-  const [includeCompleted, setIncludeCompleted] = useState(p.includeCompleted ?? false);
+  // Which built-in lists this filter also promotes its matches into.
+  const [showIn, setShowIn] = useState<PromotableKind[]>(initial?.showIn ?? []);
+  const toggleShowIn = (k: PromotableKind) =>
+    setShowIn((cur) => (cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k]));
 
   // Label + source options come straight from the live replica (synced tasks
   // included — promoting them is the point).
@@ -69,9 +73,8 @@ export function FilterBuilder({
     if (text.trim() !== "") out.text = text.trim();
     if (dueMode === "has") out.hasDue = true;
     if (dueMode === "within") out.dueWithinDays = dueDays;
-    if (includeCompleted) out.includeCompleted = true;
     return out;
-  }, [labelsAll, labelsAny, source, text, dueMode, dueDays, includeCompleted]);
+  }, [labelsAll, labelsAny, source, text, dueMode, dueDays]);
 
   // Live preview of how many active tasks this predicate would surface.
   const matchCount = useMemo(
@@ -83,11 +86,14 @@ export function FilterBuilder({
   const save = () => {
     if (!canSave) return;
     const clean = name.trim();
+    // Omit showIn when empty so it stays absent (additive) rather than an empty
+    // array; passing `undefined` on edit clears a previously-set value.
+    const patch = { name: clean, predicate, showIn: showIn.length > 0 ? showIn : undefined };
     if (initial) {
-      savedFilters.update(initial.id, { name: clean, predicate });
-      onSaved({ ...initial, name: clean, predicate });
+      savedFilters.update(initial.id, patch);
+      onSaved({ ...initial, ...patch });
     } else {
-      onSaved(savedFilters.add({ name: clean, predicate }));
+      onSaved(savedFilters.add(patch));
     }
   };
 
@@ -213,14 +219,26 @@ export function FilterBuilder({
             </div>
           </FieldRow>
 
-          <label className="flex cursor-pointer select-none items-center gap-2 text-[13px] text-ink">
-            <input
-              type="checkbox"
-              checked={includeCompleted}
-              onChange={(e) => setIncludeCompleted(e.target.checked)}
-            />
-            Include completed
-          </label>
+          <FieldRow label="Also show matches in">
+            <div className="flex items-center gap-1.5">
+              {(["today", "inbox", "upcoming"] as const).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => toggleShowIn(k)}
+                  aria-pressed={showIn.includes(k)}
+                  aria-label={`Show matches in ${k}`}
+                  className={`rounded-md border px-2 py-1 text-[12.5px] capitalize ${
+                    showIn.includes(k)
+                      ? "border-accent/50 bg-accent/10 text-accent"
+                      : "border-line text-mute hover:border-mute hover:text-ink"
+                  }`}
+                >
+                  {k}
+                </button>
+              ))}
+            </div>
+          </FieldRow>
         </div>
 
         <div className="flex items-center justify-between border-t border-line px-4 py-2.5">
@@ -284,16 +302,7 @@ function ChipAdd({
         </button>
       )}
     >
-      {(close) => (
-        <LabelMenu
-          labels={chosen}
-          options={options}
-          onAdd={(l) => {
-            onAdd(l);
-            close();
-          }}
-        />
-      )}
+      {() => <LabelMenu labels={chosen} options={options} onAdd={onAdd} />}
     </Popover>
   );
 }
