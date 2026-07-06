@@ -24,6 +24,8 @@ export function Sidebar({
   onOpenSettings,
   collapsed,
   onToggleCollapsed,
+  width,
+  resizeHandle,
 }: {
   view: View;
   onNavigate: (v: View) => void;
@@ -34,6 +36,10 @@ export function Sidebar({
   onOpenSettings: () => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  /** Expanded width in px (the drag-resizable preference). */
+  width: number;
+  /** The drag handle on the right edge, rendered only while expanded. */
+  resizeHandle?: React.ReactNode;
 }) {
   const snap = useSnapshot();
   const store = useStore();
@@ -117,7 +123,12 @@ export function Sidebar({
   }
 
   return (
-    <aside className="flex w-52 shrink-0 flex-col border-r border-line bg-surface">
+    <aside
+      data-testid="sidebar"
+      style={{ width }}
+      className="relative flex shrink-0 flex-col border-r border-line bg-surface"
+    >
+      {resizeHandle}
       <div className="flex items-center justify-between px-3 pb-3 pt-4">
         <span className="font-mono text-[15px] font-medium tracking-tight">
           taskd<span className="caret text-accent">_</span>

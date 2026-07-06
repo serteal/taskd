@@ -14,10 +14,19 @@ import {
 } from "./lib/views";
 import { endOfDay } from "./lib/format";
 import {
-  readSidebarCollapsed,
+  defaultSidebarCollapsed,
   writeSidebarCollapsed,
   readOnboardingDismissed,
   writeOnboardingDismissed,
+  readSidebarWidth,
+  writeSidebarWidth,
+  readDetailWidth,
+  writeDetailWidth,
+  readPanelWidth,
+  writePanelWidth,
+  SIDEBAR_WIDTH,
+  DETAIL_WIDTH,
+  PANEL_WIDTH,
 } from "./lib/layout";
 import { useExtensions, isSourcePaused, refreshExtensions, refreshDaemonVersion } from "./lib/admin";
 import { notify, readDueRemindersEnabled, writeDueRemindersEnabled } from "./lib/notify";
@@ -34,6 +43,8 @@ import { TaskList, visibleTasks } from "./components/TaskList";
 import { CompletedList } from "./components/CompletedList";
 import { NewTaskOverlay, type NewTaskInitial } from "./components/NewTaskOverlay";
 import { DetailPanel } from "./components/DetailPanel";
+import { ResizeHandle, useResizable } from "./components/ResizeHandle";
+import type { Panel } from "./lib/extensions";
 import { BoardView } from "./components/BoardView";
 import { ToastStack } from "./components/ToastStack";
 import { CommandPalette } from "./components/CommandPalette";
@@ -64,7 +75,22 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   // The "Save this view as…" naming modal (replaces a native window.prompt).
   const [saveViewOpen, setSaveViewOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    defaultSidebarCollapsed(typeof window === "undefined" ? 1280 : window.innerWidth),
+  );
+  // Drag-resizable widths for the left sidebar and the detail panel; one shared
+  // hook (useResizable) owns each one's persistence + viewport re-clamp. The
+  // extension panel wrappers get theirs per-id inside ResizablePanel below.
+  const sidebarResize = useResizable({
+    read: readSidebarWidth,
+    write: writeSidebarWidth,
+    bounds: SIDEBAR_WIDTH,
+  });
+  const detailResize = useResizable({
+    read: readDetailWidth,
+    write: writeDetailWidth,
+    bounds: DETAIL_WIDTH,
+  });
   const [notifyDue, setNotifyDue] = useState(readDueRemindersEnabled);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(readOnboardingDismissed);
@@ -496,6 +522,18 @@ export default function App() {
           onOpenSettings={() => setSettingsOpen(true)}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={() => setSidebarCollapsed((c) => !c)}
+          width={sidebarResize.width}
+          resizeHandle={
+            <ResizeHandle
+              edge="right"
+              label="Resize sidebar"
+              width={sidebarResize.width}
+              bounds={sidebarResize.bounds}
+              onResize={sidebarResize.onResize}
+              onCommit={sidebarResize.onCommit}
+              onReset={sidebarResize.onReset}
+            />
+          }
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
@@ -653,18 +691,31 @@ export default function App() {
             CSS hide, not an unmount) so they reappear exactly as they were when
             detail closes or the viewport widens. */}
         {openTask && (
-          <DetailPanel task={openTask} onClose={() => setOpenId(null)} onOpenTask={openTaskById} />
+          <DetailPanel
+            task={openTask}
+            onClose={() => setOpenId(null)}
+            onOpenTask={openTaskById}
+            width={detailResize.width}
+            resizeHandle={
+              <ResizeHandle
+                edge="left"
+                label="Resize details panel"
+                width={detailResize.width}
+                bounds={detailResize.bounds}
+                onResize={detailResize.onResize}
+                onCommit={detailResize.onCommit}
+                onReset={detailResize.onReset}
+              />
+            }
+          />
         )}
         {panels.map((p) => (
-          <div
+          <ResizablePanel
             key={p.id}
-            className={`shrink-0 ${openTask ? "hidden min-[1440px]:block" : "hidden md:block"}`}
-            style={{ width: p.width ?? 300 }}
-          >
-            <ExtensionBoundary name={p.id}>
-              <p.Component api={api} />
-            </ExtensionBoundary>
-          </div>
+            panel={p}
+            api={api}
+            visibilityClass={openTask ? "hidden min-[1440px]:block" : "hidden md:block"}
+          />
         ))}
       </div>
 
@@ -753,6 +804,49 @@ export default function App() {
         />
       )}
       <ToastStack />
+    </div>
+  );
+}
+
+// One extension panel wrapper, drag-resizable at its left edge. The host owns
+// the width (the registered `width ?? 300` is only the default) and persists it
+// per panel id — no extension-API change. `visibilityClass` carries the
+// responsive show/hide rules unchanged (rail hidden below md; detail-exclusive
+// below 1440px); the panel stays mounted, so a resize survives a hide/show.
+function ResizablePanel({
+  panel,
+  api,
+  visibilityClass,
+}: {
+  panel: Panel;
+  api: unknown;
+  visibilityClass: string;
+}) {
+  const defaultWidth = panel.width ?? PANEL_WIDTH.default;
+  const resize = useResizable({
+    read: () => readPanelWidth(panel.id, defaultWidth),
+    write: (w) => writePanelWidth(panel.id, w),
+    bounds: { ...PANEL_WIDTH, default: defaultWidth },
+  });
+  return (
+    <div
+      data-testid="panel-wrapper"
+      data-panel-id={panel.id}
+      className={`relative shrink-0 ${visibilityClass}`}
+      style={{ width: resize.width }}
+    >
+      <ResizeHandle
+        edge="left"
+        label={`Resize ${panel.title} panel`}
+        width={resize.width}
+        bounds={resize.bounds}
+        onResize={resize.onResize}
+        onCommit={resize.onCommit}
+        onReset={resize.onReset}
+      />
+      <ExtensionBoundary name={panel.id}>
+        <panel.Component api={api} />
+      </ExtensionBoundary>
     </div>
   );
 }
