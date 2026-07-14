@@ -157,6 +157,10 @@ test.describe("new-task overlay — pills & prefill", () => {
     await name.fill("Chip removal #temp");
     await expect(d.getByRole("button", { name: "Remove label temp" })).toBeVisible();
 
+    // The caret still touches "#temp", so the label typeahead is open on top
+    // of the pill row — dismiss it first (its Escape is consumed by the
+    // typeahead; the dialog stays open).
+    await name.press("Escape");
     await d.getByRole("button", { name: "Remove label temp" }).click();
     await name.press("Enter");
 

@@ -502,6 +502,39 @@ const extension: TaskdExtension = {
       },
     });
 
+    // @-mentions: typing "@" in a title field can tag a calendar event. The
+    // ref is the event's task id, so the chip opens the event's detail (with
+    // this extension's presenter section).
+    api.registerMentionProvider({
+      id: "gcal",
+      title: "Calendar events",
+      search: (query) => {
+        const q = query.trim().toLowerCase();
+        const now = Date.now();
+        return api
+          .getTasks()
+          .filter((t) => isGcal(t) && (q === "" || t.title.toLowerCase().includes(q)))
+          .map((t) => ({ t, iv: eventInterval(t) }))
+          // Soonest upcoming first, then the most recent past events.
+          .sort((a, b) => {
+            const at = a.iv?.start.getTime() ?? Infinity;
+            const bt = b.iv?.start.getTime() ?? Infinity;
+            const aUp = at >= now;
+            const bUp = bt >= now;
+            if (aUp !== bUp) return aUp ? -1 : 1;
+            return aUp ? at - bt : bt - at;
+          })
+          .slice(0, 6)
+          .map(({ t, iv }) => ({
+            title: t.title,
+            ref: `task:${t.id}`,
+            hint: iv
+              ? iv.start.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+              : undefined,
+          }));
+      },
+    });
+
     // A quick-add token: typing "noon" schedules the task for today at 12:00.
     api.registerQuickAddToken({
       hint: "noon",

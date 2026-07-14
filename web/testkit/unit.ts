@@ -80,6 +80,7 @@ export interface Registered {
   commands: any[];
   quickAddTokens: any[];
   themes: any[];
+  mentionProviders: any[];
 }
 
 export interface MockApi {
@@ -89,6 +90,7 @@ export interface MockApi {
   registerPanel: Spy;
   registerCommand: Spy;
   registerQuickAddToken: Spy;
+  registerMentionProvider: Spy;
   registerTheme: Spy;
   icon: (name: string, opts?: unknown) => IconMarker;
   notify: { toast: Spy; error: Spy; browser: Spy };
@@ -115,6 +117,7 @@ export function mockApi(opts: { tasks?: Task[]; now?: Date } = {}): MockApi {
     commands: [],
     quickAddTokens: [],
     themes: [],
+    mentionProviders: [],
   };
   return {
     registered,
@@ -123,6 +126,7 @@ export function mockApi(opts: { tasks?: Task[]; now?: Date } = {}): MockApi {
     registerPanel: spy((p) => registered.panels.push(p)),
     registerCommand: spy((c) => registered.commands.push(c)),
     registerQuickAddToken: spy((t) => registered.quickAddTokens.push(t)),
+    registerMentionProvider: spy((p) => registered.mentionProviders.push(p)),
     registerTheme: spy((t) => registered.themes.push(t)),
     icon: (name) => ({ __icon: name }),
     notify: { toast: spy(), error: spy(), browser: spy() },

@@ -7,6 +7,7 @@ import { setTaskDrag } from "../lib/dnd";
 import { useStore } from "../lib/hooks";
 import { rescheduleTask } from "../lib/actions";
 import { Chip } from "./Chip";
+import { MentionText } from "./MentionText";
 import { Popover } from "./Popover";
 import { ScheduleMenu } from "./pickers";
 import { Icon } from "./icons";
@@ -165,7 +166,7 @@ export function TaskRow({
           }}
           className={`min-w-0 flex-1 truncate text-[13.5px] ${checked ? "text-mute line-through" : ""}`}
         >
-          {task.title}
+          <MentionText text={task.title} />
           {meta.subtitle && <span className="ml-2 font-mono text-[11px] text-faint">{meta.subtitle}</span>}
         </span>
       )}

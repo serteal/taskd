@@ -38,11 +38,10 @@ test.describe("right dock", () => {
     await expect(page.getByTestId("detail-panel")).toBeHidden();
   });
 
-  // Detail and an extension panel now share one right-hand slot: opening a
-  // task's detail replaces the panel rather than adding a second column
-  // beside it, and closing detail restores the panel exactly as it was
-  // (openPanels is untouched the whole time).
-  test("opening a task's detail replaces an open panel in the same slot; closing it restores the panel", async ({
+  // The detail surface is a modal overlay now — it floats above everything
+  // rather than competing with the extension panels for the right-hand slot,
+  // so the panel stays mounted and visible the whole time.
+  test("opening a task's detail leaves an open panel in place (detail is a modal)", async ({
     page,
     api,
   }) => {
@@ -52,7 +51,7 @@ test.describe("right dock", () => {
 
     await page.getByText("Peek me", { exact: true }).click();
     await expect(page.getByTestId("detail-panel")).toBeVisible();
-    await expect(rail).toBeHidden();
+    await expect(rail).toBeVisible();
 
     await page.getByRole("button", { name: "Close details" }).click();
     await expect(page.getByTestId("detail-panel")).toBeHidden();

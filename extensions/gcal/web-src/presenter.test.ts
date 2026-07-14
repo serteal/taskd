@@ -33,6 +33,32 @@ describe("gcal extension registration", () => {
     expect(allDay.timeText).toBe("all day");
   });
 
+  it("the mention provider offers events, upcoming first", () => {
+    // The provider splits upcoming/past against the wall clock, so build the
+    // fixture relative to the real now.
+    const at = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
+    const ev = (id: string, title: string, start: string) =>
+      makeTask({ id, title, source: "gcal:personal", externalData: { start } } as never);
+    const api = mockApi({
+      tasks: [
+        ev("past", "Old sync", at(-5)),
+        ev("soon", "Dentist", at(1)),
+        ev("later", "Flight", at(10)),
+        makeTask({ id: "local", title: "Dentist notes" }), // not gcal → excluded
+      ],
+    });
+    extension.register(api);
+    const provider = api.registered.mentionProviders[0];
+    expect(provider.id).toBe("gcal");
+
+    const all = provider.search("");
+    expect(all.map((i: { ref: string }) => i.ref)).toEqual(["task:soon", "task:later", "task:past"]);
+    expect(all[0].title).toBe("Dentist");
+
+    const filtered = provider.search("dent");
+    expect(filtered.map((i: { title: string }) => i.title)).toEqual(["Dentist"]);
+  });
+
   it("the noon token schedules for 12:00", () => {
     const api = mockApi();
     extension.register(api);

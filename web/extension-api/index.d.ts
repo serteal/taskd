@@ -101,6 +101,33 @@ export interface QuickAddToken {
   hint?: string;
 }
 
+/** One @-mention suggestion. `ref` is what the markup stores and must be
+ *  either `task:<id>` (opens that task's detail) or an absolute URL (opens in
+ *  a new tab) — chips render from the ref alone, no provider round-trip. */
+export interface MentionItem {
+  /** What the chip shows (and what lands in the `@[title](ref)` markup). */
+  title: string;
+  /** `task:<id>` or an absolute URL. */
+  ref: string;
+  /** Small muted text in the suggestion row (e.g. a date, a source name). */
+  hint?: string;
+}
+
+/**
+ * An @-mention source. Typing "@" in a title field queries every registered
+ * provider and lists the results under `title` section headers — e.g. a
+ * calendar offering its events, a docs integration its documents.
+ */
+export interface MentionProvider {
+  /** Stable id, e.g. "gcal". */
+  id: string;
+  /** Section label in the suggestion menu, e.g. "Calendar events". */
+  title: string;
+  /** Items matching the query (empty query = a sensible default set). May be
+   *  async; a throwing/rejecting provider contributes nothing. */
+  search(query: string): MentionItem[] | Promise<MentionItem[]>;
+}
+
 /** The 8 CSS custom properties a theme sets (see index.css `@theme inline`). */
 export interface ThemeVars {
   bg: string;
@@ -156,6 +183,8 @@ export interface ExtensionAPI {
   registerCommand(c: Command): void;
   /** Interpret a quick-add token (e.g. "@home" → a label). */
   registerQuickAddToken(t: QuickAddToken): void;
+  /** Contribute @-mention suggestions (typing "@" in a title field). */
+  registerMentionProvider(p: MentionProvider): void;
   /** Contribute a theme to Settings' picker, grouped under `t.group`. */
   registerTheme(t: Theme): void;
 

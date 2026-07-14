@@ -7,7 +7,8 @@ import App from "./App";
 import { newTaskClient } from "./lib/client";
 import { TaskStore } from "./lib/store";
 import { StoreContext } from "./lib/hooks";
-import { loadExtensions } from "./lib/extensions";
+import { loadExtensions, registry } from "./lib/extensions";
+import { taskMentionProvider } from "./lib/mentions";
 import { applyTheme, resolveInitialThemeId } from "./lib/themes";
 
 // Apply the saved (or system-preferred) theme to <html> before React mounts so
@@ -27,6 +28,8 @@ window.__TASKD_REACT__ = React;
 window.__TASKD_JSX_RUNTIME__ = JSXRuntime;
 
 const store = new TaskStore(newTaskClient());
+// Core @-mention source: other tasks. Extensions add theirs on load.
+registry.mentionProviders.push(taskMentionProvider(store));
 void loadExtensions(store);
 
 createRoot(document.getElementById("root")!).render(

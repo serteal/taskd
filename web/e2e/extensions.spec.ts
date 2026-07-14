@@ -74,7 +74,7 @@ test.describe("detail + calendar rail coexistence", () => {
     await expect(rail).toBeVisible();
   });
 
-  test("at the default viewport, detail still wins the slot and the rail hides", async ({
+  test("at the default viewport, the detail modal floats above and the rail stays", async ({
     page,
     api,
   }) => {
@@ -82,9 +82,11 @@ test.describe("detail + calendar rail coexistence", () => {
     const rail = page.getByTestId("calendar-rail");
     await expect(rail).toBeVisible();
 
+    // The detail surface is a modal overlay — it never competes with the
+    // extension panels for the right-hand slot at any viewport width.
     await page.getByText("Narrow detail", { exact: true }).click();
     await expect(page.getByTestId("detail-panel")).toBeVisible();
-    await expect(rail).toBeHidden();
+    await expect(rail).toBeVisible();
   });
 });
 
@@ -122,6 +124,7 @@ test.describe("extension-contributed theme", () => {
   }) => {
     const html = page.locator("html");
     await page.getByTestId("open-settings").click();
+    await page.locator('[data-testid="settings-nav"][data-page="appearance"]').click();
 
     await expect(page.getByText("Testext", { exact: true })).toBeVisible(); // group heading
     const testextTheme = page.locator('[data-testid="theme-option"][data-theme-id="testext-theme"]');
@@ -139,6 +142,7 @@ test.describe("extension-contributed theme", () => {
   }) => {
     const html = page.locator("html");
     await page.getByTestId("open-settings").click();
+    await page.locator('[data-testid="settings-nav"][data-page="appearance"]').click();
     await page.locator('[data-testid="theme-option"][data-theme-id="testext-theme"]').click();
     await expect(html).toHaveAttribute("data-theme", "testext-theme");
 

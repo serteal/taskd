@@ -22,7 +22,9 @@ test.describe("edit task", () => {
 
   test("detail panel adds a label", async ({ page, api }) => {
     await page.getByText("Alpha", { exact: true }).click();
-    const add = page.getByRole("textbox", { name: "Add label" });
+    // "+ label" opens the autocomplete menu; Enter accepts (creating "urgent").
+    await page.getByTestId("add-label").click();
+    const add = page.getByRole("textbox", { name: "Label search" });
     await add.fill("urgent");
     await add.press("Enter");
 

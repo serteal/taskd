@@ -26,7 +26,10 @@ test.describe("multi-select & bulk actions", () => {
   });
 
   test("shift-click selects a contiguous range", async ({ page }) => {
-    await pick(page, "A", []); // plain click sets the anchor
+    // A plain click sets the anchor — and opens the detail modal, which must
+    // be dismissed before the range shift-click can reach the list again.
+    await pick(page, "A", []);
+    await page.keyboard.press("Escape");
     await pick(page, "C", ["Shift"]);
     await expect(page.getByTestId("bulk-bar")).toContainText("3 selected");
   });

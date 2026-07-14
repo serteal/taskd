@@ -1,5 +1,6 @@
 import { endOfDay } from "./format";
 import { fromNatural } from "./recur";
+import { parseMentions } from "./mentions";
 
 // The quick-add grammar, shared spirit with the CLI's --due parser (a parallel
 // agent implements the identical spec there — keep them in lockstep):
@@ -53,7 +54,7 @@ const RECUR_WORDS = new Set(["daily", "weekly", "monthly", "yearly"]);
 // Cap the "every …" phrase window; long enough for a spaced weekday list.
 const RECUR_MAX_WORDS = 7;
 
-export type TokenKind = "label" | "priority" | "due" | "ext" | "recur";
+export type TokenKind = "label" | "priority" | "due" | "ext" | "recur" | "mention";
 
 interface TimeOfDay {
   h: number;
@@ -173,14 +174,30 @@ interface Segment {
 }
 
 /** Walk the words left to right, emitting one Segment per recognized phrase and
- *  skipping unrecognized (title) words. The shared core of both public fns. */
-function scan(words: Word[], now: Date, tokens: QuickAddTokenFn[]): Segment[] {
+ *  skipping unrecognized (title) words. The shared core of both public fns.
+ *  `blockedRanges` (mention markup) are atomic title text: any word touching
+ *  one is never classified — otherwise a mention titled "lunch today" would
+ *  lose its "today" to the date parser and corrupt the markup. */
+function scan(
+  words: Word[],
+  now: Date,
+  tokens: QuickAddTokenFn[],
+  blockedRanges: { start: number; end: number }[] = [],
+): Segment[] {
   const texts = words.map((w) => w.text);
+  const blocked = words.map((w) =>
+    blockedRanges.some((b) => w.start < b.end && w.end > b.start),
+  );
+  // A phrase is only recognized when every word it consumes is unblocked.
+  const clear = (i: number, len: number) => {
+    for (let k = i; k < i + len; k++) if (blocked[k]) return false;
+    return true;
+  };
   const segs: Segment[] = [];
   let i = 0;
   while (i < words.length) {
-    const c = classifyAt(texts, i, now, tokens);
-    if (c) {
+    const c = blocked[i] ? null : classifyAt(texts, i, now, tokens);
+    if (c && clear(i, c.len)) {
       segs.push({
         wi: i,
         len: c.len,
@@ -206,7 +223,7 @@ export function parseQuickAdd(
   tokens: QuickAddTokenFn[] = [],
 ): ParsedQuickAdd {
   const words = tokenize(input);
-  const segs = scan(words, now, tokens);
+  const segs = scan(words, now, tokens, parseMentions(input));
 
   const consumed = new Set<number>();
   const labels: string[] = [];
@@ -257,7 +274,14 @@ export function tokenSpans(
   now: Date = new Date(),
   tokens: QuickAddTokenFn[] = [],
 ): TokenSpan[] {
-  return scan(tokenize(input), now, tokens).map((s) => ({ start: s.start, end: s.end, kind: s.kind }));
+  const mentions = parseMentions(input);
+  const spans: TokenSpan[] = scan(tokenize(input), now, tokens, mentions).map((s) => ({
+    start: s.start,
+    end: s.end,
+    kind: s.kind,
+  }));
+  for (const m of mentions) spans.push({ start: m.start, end: m.end, kind: "mention" });
+  return spans.sort((a, b) => a.start - b.start);
 }
 
 // --- date/time word parsing ------------------------------------------------

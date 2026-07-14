@@ -7,6 +7,7 @@ import { TASK_DRAG_MIME, readTaskId } from "./dnd";
 import { extensionNotify } from "./notify";
 import { Icon, type IconName } from "../components/icons";
 import type { Theme } from "./themes";
+import type { MentionProvider } from "./mentions";
 
 // The host side of the extension system: a registry the UI reads
 // reactively, the api object handed to each extension's register(), and the
@@ -72,6 +73,7 @@ class ExtensionRegistry {
   commands: Command[] = [];
   quickAddTokens: QuickAddToken[] = [];
   themes: Theme[] = [];
+  mentionProviders: MentionProvider[] = [];
   private listeners = new Set<() => void>();
   private version = 0;
 
@@ -207,6 +209,12 @@ export function buildAPI(store: TaskStore, extName = "extension") {
     },
     registerQuickAddToken: (t: QuickAddToken) => {
       registry.quickAddTokens.push(t);
+      registry.bump();
+    },
+    /** Contribute @-mention suggestions (typing "@" in a title field asks
+     *  every provider) — e.g. calendar events, documents. */
+    registerMentionProvider: (p: MentionProvider) => {
+      registry.mentionProviders.push(p);
       registry.bump();
     },
     /** Contribute a theme to Settings' picker — same idea as a panel or

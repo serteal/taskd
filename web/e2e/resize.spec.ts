@@ -64,29 +64,8 @@ test.describe("resizable panels", () => {
     expect(await widthOf(sidebar)).toBeCloseTo(start + 32, 0);
   });
 
-  test("the detail panel resizes by dragging its left-edge handle and persists across reload", async ({
-    page,
-    api,
-  }) => {
-    await seed(api, [{ title: "Peek me" }]);
-    await page.getByText("Peek me", { exact: true }).click();
-    const detail = page.getByTestId("detail-panel");
-    await expect(detail).toBeVisible();
-
-    const start = await widthOf(detail); // the default (340)
-    // Left-edge handle: dragging LEFT grows the panel.
-    await dragHandle(page, page.getByRole("separator", { name: "Resize details panel" }), -80);
-    const wider = await widthOf(detail);
-    expect(wider).toBeGreaterThan(start + 50);
-
-    // The width persists: reopen the task after a reload and it's still wide.
-    await page.reload();
-    await expect(page.locator('[data-testid="conn-status"][data-connected="true"]')).toBeVisible();
-    await page.getByText("Peek me", { exact: true }).click();
-    const reopened = page.getByTestId("detail-panel");
-    await expect(reopened).toBeVisible();
-    expect(Math.abs((await widthOf(reopened)) - wider)).toBeLessThan(4);
-  });
+  // The task detail is a fixed-size modal overlay now (TaskOverlay) — it has
+  // no resize handle; only the sidebar and extension panels drag-resize.
 });
 
 test.describe("resizable extension panel", () => {

@@ -69,11 +69,15 @@ export function CommandPalette({ ctx, onClose }: { ctx: CommandContext; onClose:
         className="flex max-h-[70vh] w-[560px] max-w-full flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-2xl"
         onMouseDown={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
+          // ctrl+j/n and ctrl+k/p mirror the arrows, vim/emacs style.
+          const ctrl = e.ctrlKey && !e.metaKey && !e.altKey;
+          const down = e.key === "ArrowDown" || (ctrl && (e.key === "j" || e.key === "n"));
+          const up = e.key === "ArrowUp" || (ctrl && (e.key === "k" || e.key === "p"));
           if (e.key === "Escape") onClose();
-          else if (e.key === "ArrowDown") {
+          else if (down) {
             e.preventDefault();
             setActive((a) => Math.min(a + 1, results.length - 1));
-          } else if (e.key === "ArrowUp") {
+          } else if (up) {
             e.preventDefault();
             setActive((a) => Math.max(a - 1, 0));
           } else if (e.key === "Enter") {

@@ -9,6 +9,7 @@ import { Chip } from "./Chip";
 import { Popover, PillButton } from "./Popover";
 import { ScheduleMenu, PriorityMenu, LabelMenu, ProjectMenu } from "./pickers";
 import { Icon } from "./icons";
+import { useTitleTypeahead } from "./TitleTypeahead";
 
 // The single "new task" surface — a modal that replaced the old inline bar.
 // The title field parses quick-add tokens live (#label, p1-3, dates), and the
@@ -30,6 +31,7 @@ const TOKEN_CLASS: Record<TokenKind, string> = {
   due: "rounded-sm bg-warn/15 text-warn",
   ext: "rounded-sm bg-accent/15 text-accent",
   recur: "rounded-sm bg-warn/15 text-warn",
+  mention: "rounded-sm bg-accent/20 text-accent",
 };
 
 // Todoist-style live formatting: recognized quick-add tokens get a tinted
@@ -148,6 +150,14 @@ export function NewTaskOverlay({
 
   const canAdd = parsed.title.trim() !== "";
 
+  // Inline "#label" / "@mention" autocomplete under the title field.
+  const typeahead = useTitleTypeahead({
+    ref: titleRef,
+    value: title,
+    onChange: setTitle,
+    labels: useMemo(() => [...allLabels].sort(), [allLabels]),
+  });
+
   const submit = () => {
     if (!canAdd) return;
     const finalLabels = [...(project ? [project] : []), ...(priority ? [priority] : []), ...labels];
@@ -192,18 +202,20 @@ export function NewTaskOverlay({
             <textarea
               ref={titleRef}
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={typeahead.onChange}
               onKeyDown={(e) => {
+                if (typeahead.onKeyDown(e)) return; // the dropdown owns nav/accept keys
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   submit();
                 }
               }}
               rows={1}
-              placeholder="Task name"
+              placeholder="Task name  (#label · @mention · dates)"
               aria-label="Task name"
               className={`relative max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent ${TITLE_TEXT_CLASS} text-transparent caret-ink placeholder:text-faint focus:outline-none`}
             />
+            {typeahead.menu}
           </div>
           <textarea
             ref={descRef}

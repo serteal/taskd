@@ -69,7 +69,9 @@ test.describe("detail panel — synced task field editability", () => {
     await openRow(page, GH_ISSUE.title);
 
     const detail = page.getByTestId("detail-panel");
-    const add = detail.getByRole("textbox", { name: "Add label" });
+    // "+ label" opens the autocomplete menu; Enter accepts (creating "urgent").
+    await detail.getByTestId("add-label").click();
+    const add = page.getByRole("textbox", { name: "Label search" });
     await add.fill("urgent");
     await add.press("Enter");
     await expect(detail.getByText("urgent")).toBeVisible();
@@ -249,41 +251,46 @@ test.describe("detail panel — extension sections stay scoped to their own sour
 });
 
 test.describe("detail panel — swapping the open task", () => {
-  test("clicking a different row swaps title/notes cleanly (no stale values)", async ({ page, api }) => {
+  test("stepping to the next task swaps title/notes cleanly (no stale values)", async ({ page, api }) => {
+    // Distinct dues pin the smart-sort order: A before B.
     await seed(api, [
-      { title: "Swap A", notes: "notes for A" },
-      { title: "Swap B", notes: "notes for B" },
+      { title: "Swap A", notes: "notes for A", due: new Date(Date.now() + 86_400_000) },
+      { title: "Swap B", notes: "notes for B", due: new Date(Date.now() + 2 * 86_400_000) },
     ]);
 
     await page.getByText("Swap A", { exact: true }).click();
     await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue("Swap A");
     await expect(page.getByRole("textbox", { name: "Notes" })).toHaveValue("notes for A");
 
-    // Detail panel stays mounted (App.tsx renders it with no `key`, just a new
-    // `task` prop) — title/notes only reset via DetailPanel's own
+    // The modal stays mounted while ctrl+j steps to the next task (no `key`,
+    // just a new `task` prop) — title/notes only reset via TaskOverlay's own
     // `useEffect(() => { setTitle(...); setNotes(...) }, [task])`.
-    await page.getByText("Swap B", { exact: true }).click();
+    await page.keyboard.press("Control+j");
     await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue("Swap B");
     await expect(page.getByRole("textbox", { name: "Notes" })).toHaveValue("notes for B");
   });
 
-  // DetailPanel's `newLabel` input state now resets via the same
-  // useEffect(() => { ...; setNewLabel("") }, [task]) that already resyncs
-  // title/notes — an unsubmitted "+ label" draft for task A no longer
-  // survives clicking straight into task B's row.
-  test("an unsubmitted '+ label' draft does not leak into the next task after swapping rows", async ({
+  // An unsubmitted "+ label" draft lives in the label popover; stepping to
+  // another task must neither persist it nor carry it over.
+  test("an unsubmitted '+ label' draft does not leak into the next task after swapping", async ({
     page,
     api,
   }) => {
-    await seed(api, [{ title: "Swap Label A" }, { title: "Swap Label B" }]);
+    await seed(api, [
+      { title: "Swap Label A", due: new Date(Date.now() + 86_400_000) },
+      { title: "Swap Label B", due: new Date(Date.now() + 2 * 86_400_000) },
+    ]);
 
     await page.getByText("Swap Label A", { exact: true }).click();
-    const addLabel = page.getByRole("textbox", { name: "Add label" });
+    await page.getByTestId("add-label").click();
+    const addLabel = page.getByRole("textbox", { name: "Label search" });
     await addLabel.fill("stale-draft"); // typed but never submitted (no Enter)
+    await addLabel.press("Escape"); // the popover swallows its own Escape
 
-    await page.getByText("Swap Label B", { exact: true }).click();
+    await page.keyboard.press("Control+j");
     await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue("Swap Label B");
-    await expect(page.getByRole("textbox", { name: "Add label" })).toHaveValue("");
+    await page.getByTestId("add-label").click();
+    await expect(page.getByRole("textbox", { name: "Label search" })).toHaveValue("");
 
     // It was never persisted anywhere, for either task.
     const all = await api.listAll();
