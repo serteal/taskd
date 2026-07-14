@@ -10,7 +10,8 @@ import {
 } from "../lib/admin";
 import { notify, requestBrowserPermission } from "../lib/notify";
 import { readDefaultView, writeDefaultView, viewTitle, DEFAULT_VIEWS, type DefaultView } from "../lib/views";
-import { Icon } from "./icons";
+import { KeybindingsPage } from "./Keybindings";
+import { Icon, type IconName } from "./icons";
 
 /** The cog/gear glyph, matching the hand-authored icon set's stroke style.
  *  Lives here (not in the shared `icons` set, which this wave doesn't own) and
@@ -35,17 +36,39 @@ export function GearIcon({ size = 16, className }: { size?: number; className?: 
   );
 }
 
+// The settings pages, in nav order. Callers can deep-link (e.g. the
+// onboarding card and the paused-source banner open straight to Extensions).
+export type SettingsPage =
+  | "general"
+  | "appearance"
+  | "keybindings"
+  | "notifications"
+  | "extensions"
+  | "about";
+
+const PAGES: { id: SettingsPage; title: string; icon: IconName }[] = [
+  { id: "general", title: "General", icon: "list" },
+  { id: "appearance", title: "Appearance", icon: "star" },
+  { id: "keybindings", title: "Keybindings", icon: "diamond" },
+  { id: "notifications", title: "Notifications", icon: "clock" },
+  { id: "extensions", title: "Extensions", icon: "panel" },
+  { id: "about", title: "About", icon: "circle" },
+];
+
 export function Settings({
   onClose,
   onOpenShortcuts,
   notifyDue,
   onToggleNotifyDue,
+  initialPage = "general",
 }: {
   onClose: () => void;
   onOpenShortcuts: () => void;
   notifyDue: boolean;
   onToggleNotifyDue: () => void;
+  initialPage?: SettingsPage;
 }) {
+  const [page, setPage] = useState<SettingsPage>(initialPage);
   const cardRef = useRef<HTMLDivElement>(null);
 
   // Keep the latest onClose without re-running the focus-trap effect (which
@@ -100,7 +123,7 @@ export function Settings({
         aria-label="Settings"
         tabIndex={-1}
         data-testid="settings"
-        className="flex max-h-full w-[640px] max-w-full flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-2xl focus:outline-none"
+        className="flex h-[76vh] max-h-full w-[760px] max-w-full flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-2xl focus:outline-none"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <header className="flex items-baseline justify-between border-b border-line px-5 py-3.5">
@@ -110,14 +133,41 @@ export function Settings({
           </button>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          {/* Functional settings first (Startup → Notifications → Extensions);
-              the 12-card theme catalog no longer buries them. */}
-          <GeneralSection />
-          <NotificationsSection enabled={notifyDue} onToggle={onToggleNotifyDue} />
-          <ExtensionsSection />
-          <AppearanceSection />
-          <AboutSection onOpenShortcuts={onOpenShortcuts} />
+        <div className="flex min-h-0 flex-1">
+          {/* Page nav rail. */}
+          <nav aria-label="Settings pages" className="w-[168px] shrink-0 border-r border-line bg-paper/60 p-2">
+            <ul className="flex flex-col gap-0.5">
+              {PAGES.map((p) => (
+                <li key={p.id}>
+                  <button
+                    onClick={() => setPage(p.id)}
+                    aria-current={page === p.id ? "page" : undefined}
+                    data-testid="settings-nav"
+                    data-page={p.id}
+                    className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] ${
+                      page === p.id
+                        ? "bg-accent/12 font-medium text-accent"
+                        : "text-mute hover:bg-ink/[.04] hover:text-ink"
+                    }`}
+                  >
+                    <Icon name={p.icon} size={13} className="opacity-80" />
+                    {p.title}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </nav>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+            {page === "general" && <GeneralSection />}
+            {page === "appearance" && <AppearanceSection />}
+            {page === "keybindings" && <KeybindingsPage />}
+            {page === "notifications" && (
+              <NotificationsSection enabled={notifyDue} onToggle={onToggleNotifyDue} />
+            )}
+            {page === "extensions" && <ExtensionsSection />}
+            {page === "about" && <AboutSection onOpenShortcuts={onOpenShortcuts} />}
+          </div>
         </div>
       </div>
     </div>

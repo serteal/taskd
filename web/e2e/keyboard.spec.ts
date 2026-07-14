@@ -34,11 +34,11 @@ test.describe("keyboard", () => {
     await expect(dialog(page, "Command palette")).toBeHidden();
   });
 
-  test("c and / are undocumented aliases for q — both also open the New Task overlay", async ({
+  test("c and / are aliases for q — both also open the New Task overlay", async ({
     page,
   }) => {
-    // Neither key is listed in the "?" shortcuts help (only "q" is), but
-    // App.tsx's switch treats "q" | "c" | "/" identically.
+    // The add-task keymap action carries three default bindings (q, c, /) —
+    // all equivalent, all rebindable in Settings → Keybindings.
     for (const key of ["c", "/"]) {
       await page.keyboard.press(key);
       const d = dialog(page, "New task");

@@ -23,8 +23,9 @@ test.describe("paused sources", () => {
     await expect(sourceItem(page)).toBeVisible();
     await expect(sourceItem(page)).not.toHaveAttribute("data-paused", "true");
 
-    // Disable gcal from Settings.
+    // Disable gcal from Settings → Extensions.
     await page.getByTestId("open-settings").click();
+    await page.locator('[data-testid="settings-nav"][data-page="extensions"]').click();
     await gcalToggle(page).click();
     await expect(gcalToggle(page)).toHaveAttribute("aria-checked", "false");
     await page.keyboard.press("Escape");

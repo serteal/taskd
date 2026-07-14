@@ -1,19 +1,25 @@
-const SHORTCUTS: [string, string][] = [
-  ["⌘K", "Command palette & search"],
-  ["q", "New task"],
-  ["j / k", "Move selection"],
-  ["x", "Complete (or the selection)"],
-  ["e", "Edit title inline"],
-  ["⏎", "Open details"],
-  ["Space", "Toggle selection"],
-  ["⌘/⇧-click", "Multi-select rows"],
-  ["t", "Toggle the timeline panel"],
+import { ACTIONS, prettyBinding, useKeymap } from "../lib/keymap";
+
+// A keyboard cheat sheet, opened with `?` (by default). Rendered live from the
+// keymap so rebinds in Settings → Keybindings show here immediately; the
+// fixed (non-rebindable) keys are appended below.
+const FIXED: [string, string][] = [
   ["Esc", "Close / clear selection"],
-  ["?", "This help"],
+  ["⌘/⇧-click", "Multi-select rows"],
+  ["↑↓ · ^j ^k · ^n ^p", "Move inside menus & dialogs"],
+  ["Tab / ⏎", "Accept the highlighted suggestion"],
 ];
 
-// A keyboard cheat sheet, opened with `?`.
-export function ShortcutsHelp({ onClose }: { onClose: () => void }) {
+export function ShortcutsHelp({
+  onClose,
+  onOpenKeybindings,
+}: {
+  onClose: () => void;
+  /** Jump to Settings → Keybindings to customize. */
+  onOpenKeybindings?: () => void;
+}) {
+  const keymap = useKeymap();
+  const groups = [...new Set(ACTIONS.map((a) => a.group))];
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4"
@@ -23,7 +29,7 @@ export function ShortcutsHelp({ onClose }: { onClose: () => void }) {
         role="dialog"
         aria-modal="true"
         aria-label="Keyboard shortcuts"
-        className="w-[420px] max-w-full rounded-xl border border-line bg-surface p-4 shadow-2xl"
+        className="flex max-h-[80vh] w-[460px] max-w-full flex-col rounded-xl border border-line bg-surface p-4 shadow-2xl"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="mb-2 flex items-baseline justify-between">
@@ -32,14 +38,52 @@ export function ShortcutsHelp({ onClose }: { onClose: () => void }) {
             esc
           </button>
         </div>
-        <dl className="divide-y divide-line/60">
-          {SHORTCUTS.map(([keys, desc]) => (
-            <div key={keys} className="flex items-center justify-between py-1.5">
-              <dt className="text-[13px] text-ink">{desc}</dt>
-              <dd className="font-mono text-[11px] text-mute">{keys}</dd>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {groups.map((g) => (
+            <div key={g} className="mb-2">
+              <div className="pb-0.5 pt-1 font-mono text-[10px] uppercase tracking-[0.16em] text-faint">
+                {g}
+              </div>
+              <dl className="divide-y divide-line/60">
+                {ACTIONS.filter((a) => a.group === g).map((a) => {
+                  const bindings = keymap[a.id] ?? [];
+                  return (
+                    <div key={a.id} className="flex items-center justify-between gap-4 py-1.5">
+                      <dt className="text-[13px] text-ink">{a.title}</dt>
+                      <dd className="shrink-0 font-mono text-[11px] text-mute">
+                        {bindings.length === 0
+                          ? "—"
+                          : bindings.map((b) => prettyBinding(b)).join(" · ")}
+                      </dd>
+                    </div>
+                  );
+                })}
+              </dl>
             </div>
           ))}
-        </dl>
+          <div className="mb-1">
+            <div className="pb-0.5 pt-1 font-mono text-[10px] uppercase tracking-[0.16em] text-faint">
+              Fixed
+            </div>
+            <dl className="divide-y divide-line/60">
+              {FIXED.map(([keys, desc]) => (
+                <div key={keys} className="flex items-center justify-between gap-4 py-1.5">
+                  <dt className="text-[13px] text-ink">{desc}</dt>
+                  <dd className="shrink-0 font-mono text-[11px] text-mute">{keys}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </div>
+        {onOpenKeybindings && (
+          <button
+            onClick={onOpenKeybindings}
+            data-testid="customize-keybindings"
+            className="mt-2 self-start text-[12.5px] font-medium text-accent hover:underline"
+          >
+            Customize in Settings → Keybindings
+          </button>
+        )}
       </div>
     </div>
   );

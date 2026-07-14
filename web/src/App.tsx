@@ -12,7 +12,8 @@ import {
   type SortMode,
   type BoardGroupBy,
 } from "./lib/views";
-import { endOfDay } from "./lib/format";
+import { endOfDay, startOfDay } from "./lib/format";
+import { addDays, startOfWeek, upcomingFlatTasks, upcomingModel } from "./lib/upcoming";
 import {
   defaultSidebarCollapsed,
   writeSidebarCollapsed,
@@ -20,12 +21,9 @@ import {
   writeOnboardingDismissed,
   readSidebarWidth,
   writeSidebarWidth,
-  readDetailWidth,
-  writeDetailWidth,
   readPanelWidth,
   writePanelWidth,
   SIDEBAR_WIDTH,
-  DETAIL_WIDTH,
   PANEL_WIDTH,
 } from "./lib/layout";
 import { useExtensions, isSourcePaused, refreshExtensions, refreshDaemonVersion } from "./lib/admin";
@@ -37,12 +35,14 @@ import type { CommandContext } from "./lib/commands";
 import { savedViews, type SavedView } from "./lib/savedviews";
 import { useSavedFilters, type SavedFilter } from "./lib/filters";
 import { flattenSections, nestSections } from "./lib/nest";
+import { matchStroke, prettyBinding, strokeOf, useKeymap } from "./lib/keymap";
 import { Sidebar } from "./components/Sidebar";
 import { FilterBuilder } from "./components/FilterBuilder";
 import { TaskList, visibleTasks } from "./components/TaskList";
+import { UpcomingView } from "./components/UpcomingView";
 import { CompletedList } from "./components/CompletedList";
 import { NewTaskOverlay, type NewTaskInitial } from "./components/NewTaskOverlay";
-import { DetailPanel } from "./components/DetailPanel";
+import { TaskOverlay } from "./components/TaskOverlay";
 import { ResizeHandle, useResizable } from "./components/ResizeHandle";
 import type { Panel } from "./lib/extensions";
 import { BoardView } from "./components/BoardView";
@@ -50,12 +50,15 @@ import { ToastStack } from "./components/ToastStack";
 import { CommandPalette } from "./components/CommandPalette";
 import { ExtensionBoundary } from "./components/ExtensionBoundary";
 import { ShortcutsHelp } from "./components/ShortcutsHelp";
-import { Settings } from "./components/Settings";
+import { Settings, type SettingsPage } from "./components/Settings";
 import { BulkBar } from "./components/BulkBar";
 import { ContextMenu, TaskContextMenu } from "./components/ContextMenu";
 import { ViewMenu } from "./components/ViewMenu";
 import { Icon } from "./components/icons";
 import { completeMany } from "./lib/actions";
+
+// How long a chord's first stroke ("g" of "g i") stays armed.
+const CHORD_MS = 1200;
 
 export default function App() {
   const store = useStore();
@@ -86,13 +89,9 @@ export default function App() {
     write: writeSidebarWidth,
     bounds: SIDEBAR_WIDTH,
   });
-  const detailResize = useResizable({
-    read: readDetailWidth,
-    write: writeDetailWidth,
-    bounds: DETAIL_WIDTH,
-  });
   const [notifyDue, setNotifyDue] = useState(readDueRemindersEnabled);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // null = closed; otherwise which settings page the modal opens to.
+  const [settingsOpen, setSettingsOpen] = useState<SettingsPage | null>(null);
   const [onboardingDismissed, setOnboardingDismissed] = useState(readOnboardingDismissed);
   // Shared extension state (drives source-view pause banners; also feeds the
   // sidebar's paused pills through the same store).
@@ -102,6 +101,8 @@ export default function App() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastClicked, setLastClicked] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // Upcoming's week-strip position, in whole weeks from the current week.
+  const [weekOffset, setWeekOffset] = useState(0);
   // Right-click context menu: which task, anchored at the cursor.
   const [ctxMenu, setCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   // Parents whose nested subtasks are hidden — session state only, on purpose.
@@ -213,7 +214,23 @@ export default function App() {
     collapsed: collapsedParents,
     titleOf: (id) => snap.tasks.get(id)?.title,
   });
-  const tasks = [...flattenSections(nestSecs), ...promotedSecs.flatMap((s) => s.tasks)];
+  // Upcoming (list mode) renders a day-sectioned schedule instead of TaskList.
+  // Its model doubles as the keyboard order: this week starts at today (with
+  // the overdue lead-in); a browsed week (‹ ›) shows just those 7 days.
+  const upModel =
+    view.kind === "upcoming" && !board
+      ? upcomingModel(
+          snap.tasks.values(),
+          now,
+          weekOffset === 0 ? startOfDay(now) : addDays(startOfWeek(now), weekOffset * 7),
+          weekOffset === 0 ? 14 : 7,
+          { includeOverdue: weekOffset === 0 },
+        )
+      : null;
+  const tasks = [
+    ...(upModel ? upcomingFlatTasks(upModel) : flattenSections(nestSecs)),
+    ...promotedSecs.flatMap((s) => s.tasks),
+  ];
   const selectedTasks = [...selected].map((id) => snap.tasks.get(id)).filter((t): t is NonNullable<typeof t> => !!t);
 
   // Clicking a row: plain = open detail (clears selection); ⌘/Ctrl = toggle in
@@ -264,6 +281,7 @@ export default function App() {
     setSort(p.sort);
     setBoard(p.board);
     setGroupBy(p.groupBy);
+    setWeekOffset(0); // Upcoming re-enters on the current week
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewKey]);
   useEffect(() => {
@@ -324,6 +342,18 @@ export default function App() {
       return next;
     });
 
+  // Move the keyboard cursor by delta rows — shared by plain j/k and the
+  // vim/emacs-style ctrl+j/k / ctrl+n/p variants.
+  const moveSelection = (delta: 1 | -1) => {
+    if (tasks.length === 0) return;
+    const idx = tasks.findIndex((t) => t.id === selectedId);
+    const next = idx === -1 ? 0 : Math.min(Math.max(idx + delta, 0), tasks.length - 1);
+    const id = tasks[next].id;
+    setSelectedId(id);
+    if (openId !== null) setOpenId(id);
+    document.querySelector(`[data-task-row="${id}"]`)?.scrollIntoView({ block: "nearest" });
+  };
+
   const cmdCtx = useMemo<CommandContext>(
     () => ({
       tasks: [...snap.tasks.values()],
@@ -336,7 +366,7 @@ export default function App() {
       togglePanel,
       openTask: openTaskById,
       openAdd,
-      openSettings: () => setSettingsOpen(true),
+      openSettings: () => setSettingsOpen("general"),
       saveCurrentView,
       applySaved,
       extCommands: registry.commands,
@@ -347,18 +377,93 @@ export default function App() {
     [snap, store, selectedId, view, now, regVersion, sort, board, groupBy],
   );
 
-  // Keyboard: list navigation stays out of the way of typing.
+  // Keyboard: every global shortcut is a keymap action (lib/keymap, user-
+  // rebindable in Settings → Keybindings). This handler resolves the event to
+  // a stroke, matches it (chord-aware), and dispatches; list navigation stays
+  // out of the way of typing.
+  const keymap = useKeymap();
+  const pendingStroke = useRef<{ stroke: string; at: number } | null>(null);
   useEffect(() => {
+    const runAction = (id: string) => {
+      switch (id) {
+        case "palette":
+          setPaletteOpen((o) => !o);
+          return;
+        case "add-task":
+          openAdd();
+          return;
+        case "undo": {
+          const undone = undoLast();
+          notify.toast({ kind: "info", message: undone ? `Undid ${undone.label}` : "Nothing to undo" });
+          return;
+        }
+        case "toggle-panel":
+          if (registry.panels.length > 0) togglePanel(registry.panels[0].id);
+          return;
+        case "help":
+          setHelpOpen(true);
+          return;
+        case "go-inbox":
+        case "go-today":
+        case "go-upcoming":
+        case "go-all":
+        case "go-completed": {
+          setOpenId(null);
+          navigate({ kind: id.slice("go-".length) as "inbox" | "today" | "upcoming" | "all" | "completed" });
+          return;
+        }
+        case "move-down":
+          moveSelection(1);
+          return;
+        case "move-up":
+          moveSelection(-1);
+          return;
+        case "complete": {
+          if (selected.size > 0) {
+            completeMany(store, selectedTasks);
+            clearSelection();
+            return;
+          }
+          const t = tasks.find((t) => t.id === selectedId);
+          if (t) completeTask(store, t);
+          return;
+        }
+        case "edit-title": {
+          const t = tasks.find((t) => t.id === selectedId);
+          if (t && t.source === "") setEditingId(t.id);
+          return;
+        }
+        case "open-details":
+          if (selectedId !== null) setOpenId(selectedId);
+          return;
+        case "toggle-select": {
+          if (!selectedId) return;
+          setLastClicked(selectedId);
+          setSelected((s) => {
+            const n = new Set(s);
+            n.has(selectedId) ? n.delete(selectedId) : n.add(selectedId);
+            return n;
+          });
+          return;
+        }
+      }
+    };
+
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setPaletteOpen((o) => !o);
-        return;
+      const stroke = strokeOf(e);
+      // whileTyping actions (the palette) fire anywhere — inputs, modals.
+      if (stroke) {
+        const m = matchStroke(keymap, "", stroke, (a) => a.whileTyping === true);
+        if (m.action) {
+          e.preventDefault();
+          runAction(m.action);
+          return;
+        }
       }
       // Modal overlays own the keyboard while open; Escape always closes them
       // (even if focus has left their card).
       if (settingsOpen) {
-        if (e.key === "Escape") setSettingsOpen(false);
+        if (e.key === "Escape") setSettingsOpen(null);
         return;
       }
       if (filterBuilder) {
@@ -395,86 +500,34 @@ export default function App() {
         setOpenId(null);
         return;
       }
-      // ⌘Z / Ctrl+Z: global undo. Never while editing text — native undo must
-      // keep working inside inputs/textareas/contenteditable — and never with
-      // Shift (that's redo). Modal overlays already returned above, so this only
-      // runs on the bare app surface (detail panel may be open, focus outside it).
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z") {
-        if (typing || el.isContentEditable) return;
-        e.preventDefault();
-        const undone = undoLast();
-        notify.toast({ kind: "info", message: undone ? `Undid ${undone.label}` : "Nothing to undo" });
+      // Everything else is a keymap action — but never while editing text
+      // (native undo/caret/kill commands must keep working inside inputs and
+      // contenteditable). Chord-aware: a bare first stroke ("g" of "g i")
+      // arms a pending prefix for CHORD_MS.
+      if (typing || el.isContentEditable) {
+        pendingStroke.current = null;
         return;
       }
-      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      switch (e.key) {
-        case " ": {
-          if (selectedId) {
-            e.preventDefault();
-            setLastClicked(selectedId);
-            setSelected((s) => {
-              const n = new Set(s);
-              n.has(selectedId) ? n.delete(selectedId) : n.add(selectedId);
-              return n;
-            });
-          }
-          return;
-        }
-        case "q":
-        case "c":
-        case "/": {
-          e.preventDefault();
-          openAdd();
-          return;
-        }
-        case "t": {
-          if (registry.panels.length > 0) togglePanel(registry.panels[0].id);
-          return;
-        }
-        case "?": {
-          e.preventDefault();
-          setHelpOpen(true);
-          return;
-        }
-        case "j":
-        case "k": {
-          if (tasks.length === 0) return;
-          const idx = tasks.findIndex((t) => t.id === selectedId);
-          const next =
-            idx === -1 ? 0 : Math.min(Math.max(idx + (e.key === "j" ? 1 : -1), 0), tasks.length - 1);
-          const id = tasks[next].id;
-          setSelectedId(id);
-          if (openId !== null) setOpenId(id);
-          document.querySelector(`[data-task-row="${id}"]`)?.scrollIntoView({ block: "nearest" });
-          return;
-        }
-        case "x": {
-          if (selected.size > 0) {
-            completeMany(store, selectedTasks);
-            clearSelection();
-            return;
-          }
-          const t = tasks.find((t) => t.id === selectedId);
-          if (t) completeTask(store, t);
-          return;
-        }
-        case "e": {
-          const t = tasks.find((t) => t.id === selectedId);
-          if (t && t.source === "") {
-            e.preventDefault();
-            setEditingId(t.id);
-          }
-          return;
-        }
-        case "Enter": {
-          if (selectedId !== null) setOpenId(selectedId);
-          return;
-        }
+      if (!stroke) return;
+      const at = performance.now();
+      const pending =
+        pendingStroke.current && at - pendingStroke.current.at < CHORD_MS
+          ? pendingStroke.current.stroke
+          : "";
+      pendingStroke.current = null;
+      let m = matchStroke(keymap, pending, stroke);
+      // A chord that fizzled still gives the stroke a solo try.
+      if (!m.action && pending !== "") m = matchStroke(keymap, "", stroke);
+      if (m.action) {
+        e.preventDefault();
+        runAction(m.action);
+        return;
       }
+      if (m.prefix) pendingStroke.current = { stroke, at };
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tasks, selectedId, openId, store, adding, paletteOpen, helpOpen, saveViewOpen, settingsOpen, filterBuilder, view, now, selected, selectedTasks]);
+  }, [tasks, selectedId, openId, store, adding, paletteOpen, helpOpen, saveViewOpen, settingsOpen, filterBuilder, view, now, selected, selectedTasks, keymap]);
 
   const showSort = view.kind !== "completed" && view.kind !== "ext";
   // The header count comes from the same single source of truth as the
@@ -519,7 +572,7 @@ export default function App() {
           onApplySaved={applySaved}
           onNewFilter={() => setFilterBuilder({})}
           onEditFilter={(f) => setFilterBuilder({ editing: f })}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => setSettingsOpen("general")}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={() => setSidebarCollapsed((c) => !c)}
           width={sidebarResize.width}
@@ -601,7 +654,7 @@ export default function App() {
                 This source is paused — items are no longer syncing.
               </span>
               <button
-                onClick={() => setSettingsOpen(true)}
+                onClick={() => setSettingsOpen("extensions")}
                 className="shrink-0 font-medium text-accent hover:underline"
               >
                 Re-enable it in Settings
@@ -631,7 +684,7 @@ export default function App() {
             ) : firstRun && !onboardingDismissed ? (
               <OnboardingCard
                 onAdd={openAdd}
-                onOpenSettings={() => setSettingsOpen(true)}
+                onOpenSettings={() => setSettingsOpen("extensions")}
                 onOpenShortcuts={() => setHelpOpen(true)}
                 onDismiss={() => {
                   writeOnboardingDismissed(true);
@@ -640,6 +693,34 @@ export default function App() {
               />
             ) : firstRun ? (
               <EmptyState onAdd={openAdd} />
+            ) : upModel ? (
+              <UpcomingView
+                model={upModel}
+                now={now}
+                weekOffset={weekOffset}
+                onWeekOffset={setWeekOffset}
+                selectedId={selectedId}
+                bulkSelected={selected}
+                editingId={editingId}
+                extraSections={promotedSecs}
+                onSelect={setSelectedId}
+                onActivate={activateRow}
+                onOpen={openTaskById}
+                onStartEdit={setEditingId}
+                onRename={(id, title) => {
+                  const t = snap.tasks.get(id);
+                  const clean = title.trim();
+                  if (t && clean && clean !== t.title) {
+                    void store.update(id, { title: clean, expectedRevision: t.revision }).catch(() => {});
+                  }
+                }}
+                onEndEdit={() => setEditingId(null)}
+                onContextMenu={(id, x, y) => {
+                  setSelectedId(id);
+                  setCtxMenu({ id, x, y });
+                }}
+                onAddTask={(day) => setAdding({ due: endOfDay(day) })}
+              />
             ) : board ? (
               <BoardView
                 tasks={tasks}
@@ -683,39 +764,10 @@ export default function App() {
           </div>
         </main>
 
-        {/* Right-hand rails: an open task's detail sits adjacent to the main
-            list; extension panels stay outermost right. On a wide viewport
-            (≥1440px) BOTH show at once; below that the detail wins the slot and
-            the panels hide (detail-exclusive, the historical behaviour).
-            openPanels is untouched the whole time — the panels stay mounted (a
-            CSS hide, not an unmount) so they reappear exactly as they were when
-            detail closes or the viewport widens. */}
-        {openTask && (
-          <DetailPanel
-            task={openTask}
-            onClose={() => setOpenId(null)}
-            onOpenTask={openTaskById}
-            width={detailResize.width}
-            resizeHandle={
-              <ResizeHandle
-                edge="left"
-                label="Resize details panel"
-                width={detailResize.width}
-                bounds={detailResize.bounds}
-                onResize={detailResize.onResize}
-                onCommit={detailResize.onCommit}
-                onReset={detailResize.onReset}
-              />
-            }
-          />
-        )}
+        {/* Right-hand rail: extension panels. (Task detail is a modal overlay
+            now — see TaskOverlay below — so panels no longer share the slot.) */}
         {panels.map((p) => (
-          <ResizablePanel
-            key={p.id}
-            panel={p}
-            api={api}
-            visibilityClass={openTask ? "hidden min-[1440px]:block" : "hidden md:block"}
-          />
+          <ResizablePanel key={p.id} panel={p} api={api} visibilityClass="hidden md:block" />
         ))}
       </div>
 
@@ -738,7 +790,19 @@ export default function App() {
           {snap.connected ? "live" : "reconnecting…"}
         </span>
         <button onClick={() => setPaletteOpen(true)} className="hidden hover:text-ink sm:block">
-          ⌘K commands · q add · j/k move · x done · ? help
+          {/* Live hints from the keymap — a rebind updates the footer too. */}
+          {[
+            ["palette", "commands"],
+            ["add-task", "add"],
+            ["complete", "done"],
+            ["help", "help"],
+          ]
+            .map(([id, label]) => {
+              const b = keymap[id]?.[0];
+              return b ? `${prettyBinding(b)} ${label}` : null;
+            })
+            .filter(Boolean)
+            .join(" · ")}
         </button>
       </footer>
 
@@ -789,14 +853,31 @@ export default function App() {
           }}
         />
       )}
+      {openTask && (
+        <TaskOverlay
+          task={openTask}
+          onClose={() => setOpenId(null)}
+          onOpenTask={openTaskById}
+          onNav={moveSelection}
+        />
+      )}
       {adding && <NewTaskOverlay now={now} initial={adding} onClose={() => setAdding(null)} />}
       {paletteOpen && <CommandPalette ctx={cmdCtx} onClose={() => setPaletteOpen(false)} />}
-      {helpOpen && <ShortcutsHelp onClose={() => setHelpOpen(false)} />}
+      {helpOpen && (
+        <ShortcutsHelp
+          onClose={() => setHelpOpen(false)}
+          onOpenKeybindings={() => {
+            setHelpOpen(false);
+            setSettingsOpen("keybindings");
+          }}
+        />
+      )}
       {settingsOpen && (
         <Settings
-          onClose={() => setSettingsOpen(false)}
+          initialPage={settingsOpen}
+          onClose={() => setSettingsOpen(null)}
           onOpenShortcuts={() => {
-            setSettingsOpen(false);
+            setSettingsOpen(null);
             setHelpOpen(true);
           }}
           notifyDue={notifyDue}

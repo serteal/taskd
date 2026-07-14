@@ -1,41 +1,48 @@
 import { test, expect, daysFromNow, FIXED_NOW } from "./fixtures";
 import { runCommand } from "./helpers";
+import type { Page } from "@playwright/test";
 
-// The Settings overlay wires up two earlier-wave features: the full theme
-// picker (Appearance) and extension enable/disable (Extensions). It opens from
-// the Sidebar gear and from a ⌘K command, and is a focus-trapped, Escape-
-// dismissable panel like ShortcutsHelp / the command palette.
+// The Settings overlay is a paged modal: a nav rail (General / Appearance /
+// Keybindings / Notifications / Extensions / About) with one page rendered at
+// a time. It opens from the Sidebar gear and from a ⌘K command, and is a
+// focus-trapped, Escape-dismissable panel like ShortcutsHelp / the palette.
+
+/** Open Settings from the sidebar, optionally navigating to a page. */
+const openSettings = async (page: Page, pageId?: string) => {
+  await page.getByTestId("open-settings").click();
+  if (pageId) await page.locator(`[data-testid="settings-nav"][data-page="${pageId}"]`).click();
+};
 
 test.describe("settings", () => {
-  test("opens from the sidebar and closes on Escape", async ({ page }) => {
-    await page.getByTestId("open-settings").click();
+  test("opens from the sidebar with a page nav and closes on Escape", async ({ page }) => {
+    await openSettings(page);
     const panel = page.getByTestId("settings");
     await expect(panel).toBeVisible();
+    // The default page is General; every page is reachable from the nav rail.
     await expect(panel).toContainText("Startup view");
-    await expect(panel).toContainText("Notifications");
-    await expect(panel).toContainText("Extensions");
-    await expect(panel).toContainText("Appearance");
-    await expect(panel).toContainText("About");
-
-    // Functional settings lead; the theme catalog (Appearance) is demoted to
-    // just above About so it no longer buries them.
     const order = await panel
-      .locator("section[data-testid]")
-      .evaluateAll((els) => els.map((e) => e.getAttribute("data-testid")));
+      .locator('[data-testid="settings-nav"]')
+      .evaluateAll((els) => els.map((e) => e.getAttribute("data-page")));
     expect(order).toEqual([
-      "settings-general",
-      "settings-notifications",
-      "settings-extensions",
-      "settings-appearance",
-      "settings-about",
+      "general",
+      "appearance",
+      "keybindings",
+      "notifications",
+      "extensions",
+      "about",
     ]);
+
+    // Switching pages swaps the content pane.
+    await panel.locator('[data-testid="settings-nav"][data-page="notifications"]').click();
+    await expect(panel).toContainText("Due-task reminders");
+    await expect(panel).not.toContainText("Startup view");
 
     await page.keyboard.press("Escape");
     await expect(panel).toBeHidden();
   });
 
   test("About shows the daemon version and address", async ({ page }) => {
-    await page.getByTestId("open-settings").click();
+    await openSettings(page, "about");
     // A dev build reports "dev"; a stamped build reports "v<git describe>",
     // which can carry hyphens ("v0.1.0-3-gabc123", "v2bd8777-dirty"). Either
     // way the About line carries a non-empty version string.
@@ -53,7 +60,7 @@ test.describe("settings", () => {
     await expect(html).toHaveAttribute("data-theme", "paper"); // default light
     await expect(html).not.toHaveClass(/dark/);
 
-    await page.getByTestId("open-settings").click();
+    await openSettings(page, "appearance");
 
     // The active theme is marked, the others are not.
     const paper = page.locator('[data-testid="theme-option"][data-theme-id="paper"]');
@@ -71,7 +78,7 @@ test.describe("settings", () => {
 
   test("the light/dark quick toggle flips the mode", async ({ page }) => {
     const html = page.locator("html");
-    await page.getByTestId("open-settings").click();
+    await openSettings(page, "appearance");
     await page.getByRole("button", { name: "dark mode" }).click();
     await expect(html).toHaveClass(/dark/);
     await page.getByRole("button", { name: "light mode" }).click();
@@ -79,12 +86,12 @@ test.describe("settings", () => {
   });
 
   test("shows no extensions on a clean daemon", async ({ page }) => {
-    await page.getByTestId("open-settings").click();
+    await openSettings(page, "extensions");
     await expect(page.getByTestId("settings-extensions")).toContainText("No extensions installed");
   });
 
   test("the startup view picker changes which view a bare load opens to", async ({ page, daemon }) => {
-    await page.getByTestId("open-settings").click();
+    await openSettings(page); // General is the landing page
     const inbox = page.locator('[data-testid="default-view-option"][data-view="inbox"]');
     const today = page.locator('[data-testid="default-view-option"][data-view="today"]');
     await expect(today).toHaveAttribute("aria-pressed", "true"); // default
@@ -132,7 +139,7 @@ test.describe("due-task reminders", () => {
   });
 
   test("enabling requests permission and the choice persists across a reload", async ({ page }) => {
-    await page.getByTestId("open-settings").click();
+    await openSettings(page, "notifications");
     const toggle = page.getByTestId("notify-due-toggle");
     await expect(toggle).toHaveAttribute("aria-checked", "false");
 
@@ -142,7 +149,7 @@ test.describe("due-task reminders", () => {
 
     await page.reload();
     await expect(page.locator('[data-testid="conn-status"][data-connected="true"]')).toBeVisible();
-    await page.getByTestId("open-settings").click();
+    await openSettings(page, "notifications");
     await expect(page.getByTestId("notify-due-toggle")).toHaveAttribute("aria-checked", "true");
   });
 
@@ -154,7 +161,7 @@ test.describe("due-task reminders", () => {
     // notify for this (no backlog storm on opt-in).
     await api.createTask({ title: "Old overdue thing", due: daysFromNow(-2) });
 
-    await page.getByTestId("open-settings").click();
+    await openSettings(page, "notifications");
     await page.getByTestId("notify-due-toggle").click();
     await page.keyboard.press("Escape");
 
@@ -205,7 +212,7 @@ test.describe("settings (extensions)", () => {
   test.use({ mode: "extensions" });
 
   test("lists installed extensions with capability badges", async ({ page }) => {
-    await page.getByTestId("open-settings").click();
+    await openSettings(page, "extensions");
     const rows = page.getByTestId("ext-row");
     await expect(rows).toHaveCount(3); // gcal, github, testext (staged fixtures)
 
@@ -216,7 +223,7 @@ test.describe("settings (extensions)", () => {
   });
 
   test("each extension row lists the sources it currently feeds, with counts", async ({ page }) => {
-    await page.getByTestId("open-settings").click();
+    await openSettings(page, "extensions");
 
     // gcal's mock syncs into source "gcal:personal"; the row derives that from
     // the live replica and shows an item count.
@@ -228,7 +235,7 @@ test.describe("settings (extensions)", () => {
   });
 
   test("toggling an extension reflects the new state in the list", async ({ page }) => {
-    await page.getByTestId("open-settings").click();
+    await openSettings(page, "extensions");
 
     const row = page.locator('[data-testid="ext-row"][data-ext="testext"]');
     const toggle = page.locator('[data-testid="ext-toggle"][data-ext="testext"]');
